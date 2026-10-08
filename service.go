@@ -90,7 +90,9 @@ func (s *Service) lockTab(sheet, tab string) func() {
 	}
 }
 
-func (s *Service) hidden(sheet, tab string) []string { return s.cfg.Spreadsheets[sheet].Tabs[tab].Hidden }
+func (s *Service) hidden(sheet, tab string) []string {
+	return s.cfg.Spreadsheets[sheet].Tabs[tab].Hidden
+}
 
 // visibleColumns returns header columns a caller may see, in sheet order.
 func (s *Service) visibleColumns(snap snapshot, sheet, tab string) []string {
