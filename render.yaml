@@ -1,0 +1,13 @@
+# Add two Secret Files in the Render dashboard after deploying:
+#   config.yaml and service-account.json
+services:
+  - type: web
+    name: sheetserve
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    envVars:
+      - key: SHEETSERVE_CONFIG
+        value: /etc/secrets/config.yaml
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/service-account.json
