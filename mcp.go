@@ -31,6 +31,15 @@ func (a *API) mcpHandler() http.Handler {
 // the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
 func (a *API) mcpServer(ctx context.Context, key *Key) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: version}, nil)
+	a.eachTab(ctx, key, func(sheet, tab string, ops, cols []string) {
+		a.addTabTools(srv, key, sheet, tab, ops, cols)
+	})
+	return srv
+}
+
+// eachTab calls fn, in sorted order, for every tab key can reach, with the ops it may perform
+// and the visible non-id columns. Tabs whose header can't be read are skipped.
+func (a *API) eachTab(ctx context.Context, key *Key, fn func(sheet, tab string, ops, cols []string)) {
 	for _, sheet := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets)) {
 		for _, tab := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets[sheet].Tabs)) {
 			ops := slices.DeleteFunc(slices.Clone(allOps), func(op string) bool { return !a.cfg.can(key, sheet, tab, op) })
@@ -39,14 +48,12 @@ func (a *API) mcpServer(ctx context.Context, key *Key) *mcp.Server {
 			}
 			snap, err := a.svc.load(ctx, sheet, tab, false)
 			if err != nil {
-				slog.Warn("mcp: skipping tab", "sheet", sheet, "tab", tab, "err", err)
+				slog.Warn("skipping tab", "sheet", sheet, "tab", tab, "err", err)
 				continue
 			}
-			cols := slices.DeleteFunc(a.svc.visibleColumns(snap, sheet, tab), func(c string) bool { return c == "id" })
-			a.addTabTools(srv, key, sheet, tab, ops, cols)
+			fn(sheet, tab, ops, slices.DeleteFunc(a.svc.visibleColumns(snap, sheet, tab), func(c string) bool { return c == "id" }))
 		}
 	}
-	return srv
 }
 
 type idArgs struct {

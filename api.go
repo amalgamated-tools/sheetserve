@@ -25,6 +25,7 @@ func (a *API) routes() http.Handler {
 	mux.Handle("POST /v1/{sheet}/{tab}", a.endpoint("create", a.create))
 	mux.Handle("PATCH /v1/{sheet}/{tab}/{id}", a.endpoint("update", a.update))
 	mux.Handle("DELETE /v1/{sheet}/{tab}/{id}", a.endpoint("delete", a.delete))
+	mux.HandleFunc("GET /openapi.json", a.openAPIHandler)
 	mux.Handle("/mcp", a.mcpHandler())
 	return mux
 }

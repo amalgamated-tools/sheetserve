@@ -7,6 +7,7 @@ You configure it with one YAML file.
 - You set the allowed operations for each tab, and you can hide columns.
 - API keys are scoped to tabs and operations. The config stores only their SHA-256 hashes.
 - `/mcp` serves an MCP endpoint. Each key gets tools for the tabs it can reach, built from the header row.
+- `/openapi.json` serves an OpenAPI 3.1 spec. It lists only the tabs, ops and columns the caller's key can use.
 - A per-tab cache stores reads. Any write to a tab clears that tab's cache.
 - Every request is logged as JSON, with the key name and the reason for any refusal.
 

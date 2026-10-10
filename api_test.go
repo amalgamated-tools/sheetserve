@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -165,6 +166,42 @@ func TestColName(t *testing.T) {
 	for i, want := range map[int]string{0: "A", 25: "Z", 26: "AA", 51: "AZ", 52: "BA", 701: "ZZ", 702: "AAA"} {
 		if got := colName(i); got != want {
 			t.Errorf("colName(%d) = %s, want %s", i, got, want)
+		}
+	}
+}
+
+func TestOpenAPI(t *testing.T) {
+	h := newTestAPI(t)
+	if status, _ := call(t, h, "GET", "/openapi.json", "", ""); status != 401 {
+		t.Fatalf("no key: got %d, want 401", status)
+	}
+	status, body := call(t, h, "GET", "/openapi.json", "web-key", "")
+	var spec struct {
+		OpenAPI string                    `json:"openapi"`
+		Paths   map[string]map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(body), &spec); status != 200 || err != nil || spec.OpenAPI != "3.1.0" {
+		t.Fatalf("spec: %d %v %s", status, err, body)
+	}
+	for path, want := range map[string][]string{
+		"/v1/shop/Products":      {"get"},
+		"/v1/shop/Products/{id}": {"get"},
+		"/v1/shop/Orders":        {"get"}, // tab allows create, but the key is read-only
+		"/v1/shop/Orders/{id}":   {"get"},
+	} {
+		got := slices.Sorted(maps.Keys(spec.Paths[path]))
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: methods %v, want %v", path, got, want)
+		}
+	}
+	if strings.Contains(body, "cost") {
+		t.Fatalf("hidden column leaked into spec: %s", body)
+	}
+
+	_, body = call(t, h, "GET", "/openapi.json", "admin-key", "")
+	for _, want := range []string{`"post"`, `"patch"`, `"delete"`, `"qty"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("admin spec missing %s", want)
 		}
 	}
 }
