@@ -2,36 +2,43 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type obj = map[string]any
 
 // openAPIHandler serves an OpenAPI 3.1 spec covering only what the caller's key can reach.
 func (a *API) openAPIHandler(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	key := a.cfg.keyFor(bearer(r))
+	status, keyName, reason := http.StatusOK, "", ""
 	if key == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
-		return
+		status, reason = http.StatusUnauthorized, "missing or invalid API key"
+		writeJSON(w, status, map[string]string{"error": reason})
+	} else {
+		keyName = key.Name
+		writeJSON(w, status, a.openAPI(r.Context(), key))
 	}
-	writeJSON(w, http.StatusOK, a.openAPI(r.Context(), key))
+	slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "op", "openapi", "key", keyName,
+		"status", status, "reason", reason, "duration_ms", time.Since(start).Milliseconds())
 }
 
 func (a *API) openAPI(ctx context.Context, key *Key) obj {
 	schemas := obj{"Error": object(obj{"error": obj{"type": "string"}}, "error")}
 	paths := obj{}
-	a.eachTab(ctx, key, func(sheet, tab string, ops, cols []string) {
-		name := toolSafe.ReplaceAllString(sheet+"_"+tab, "_")
-		fields := obj{}
+	a.eachTab(ctx, key, func(name, sheet, tab string, ops, cols []string) {
+		// Rows carry every visible column (id included) with raw cell values, so leave types open.
+		row, fields := obj{}, obj{}
 		for _, c := range cols {
-			fields[c] = obj{}
-		}
-		row := obj{"id": obj{"type": "string"}}
-		for c := range fields {
 			row[c] = obj{}
+			if c != "id" {
+				fields[c] = obj{}
+			}
 		}
-		schemas[name] = object(row, "id")
+		schemas[name] = object(row, cols...)
 		ref := obj{"$ref": "#/components/schemas/" + name}
 		input := obj{"type": "object", "properties": fields, "additionalProperties": false}
 
@@ -46,6 +53,9 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 					obj{"name": "offset", "in": "query", "schema": obj{"type": "integer", "minimum": 0}},
 				}
 				for _, c := range cols {
+					if c == "limit" || c == "offset" { // API.list reads these only as pagination
+						continue
+					}
 					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": obj{"type": "string"}})
 				}
 				coll["get"] = operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})

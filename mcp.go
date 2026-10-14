@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,15 +32,17 @@ func (a *API) mcpHandler() http.Handler {
 // the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
 func (a *API) mcpServer(ctx context.Context, key *Key) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: version}, nil)
-	a.eachTab(ctx, key, func(sheet, tab string, ops, cols []string) {
-		a.addTabTools(srv, key, sheet, tab, ops, cols)
+	a.eachTab(ctx, key, func(name, sheet, tab string, ops, cols []string) {
+		a.addTabTools(srv, key, name, sheet, tab, ops, cols)
 	})
 	return srv
 }
 
-// eachTab calls fn, in sorted order, for every tab key can reach, with the ops it may perform
-// and the visible non-id columns. Tabs whose header can't be read are skipped.
-func (a *API) eachTab(ctx context.Context, key *Key, fn func(sheet, tab string, ops, cols []string)) {
+// eachTab calls fn, in sorted order, for every tab key can reach, with a name unique among
+// those tabs, the ops it may perform and its distinct visible columns (including id).
+// Tabs whose header can't be read are skipped.
+func (a *API) eachTab(ctx context.Context, key *Key, fn func(name, sheet, tab string, ops, cols []string)) {
+	used := map[string]bool{}
 	for _, sheet := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets)) {
 		for _, tab := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets[sheet].Tabs)) {
 			ops := slices.DeleteFunc(slices.Clone(allOps), func(op string) bool { return !a.cfg.can(key, sheet, tab, op) })
@@ -48,10 +51,23 @@ func (a *API) eachTab(ctx context.Context, key *Key, fn func(sheet, tab string, 
 			}
 			snap, err := a.svc.load(ctx, sheet, tab, false)
 			if err != nil {
-				slog.Warn("skipping tab", "sheet", sheet, "tab", tab, "err", err)
+				slog.WarnContext(ctx, "skipping tab", "sheet", sheet, "tab", tab, "err", err)
 				continue
 			}
-			fn(sheet, tab, ops, slices.DeleteFunc(a.svc.visibleColumns(snap, sheet, tab), func(c string) bool { return c == "id" }))
+			// "shop/A B" and "shop/A_B" both sanitize to shop_A_B; suffix later ones.
+			base := toolSafe.ReplaceAllString(sheet+"_"+tab, "_")
+			name := base
+			for i := 2; used[name]; i++ {
+				name = base + "_" + strconv.Itoa(i)
+			}
+			used[name] = true
+			var cols []string
+			for _, c := range a.svc.visibleColumns(snap, sheet, tab) {
+				if !slices.Contains(cols, c) {
+					cols = append(cols, c)
+				}
+			}
+			fn(name, sheet, tab, ops, cols)
 		}
 	}
 }
@@ -60,12 +76,13 @@ type idArgs struct {
 	ID string `json:"id"`
 }
 
-func (a *API) addTabTools(srv *mcp.Server, key *Key, sheet, tab string, ops, cols []string) {
-	name := toolSafe.ReplaceAllString(sheet+"_"+tab, "_")
+func (a *API) addTabTools(srv *mcp.Server, key *Key, name, sheet, tab string, ops, cols []string) {
 	where := sheet + "/" + tab
 	columns := map[string]any{}
 	for _, c := range cols {
-		columns[c] = map[string]any{}
+		if c != "id" {
+			columns[c] = map[string]any{}
+		}
 	}
 	fields := map[string]any{"type": "object", "properties": columns, "additionalProperties": false}
 	idSchema := object(map[string]any{"id": map[string]any{"type": "string"}}, "id")

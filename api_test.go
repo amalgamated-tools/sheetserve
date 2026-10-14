@@ -205,3 +205,57 @@ func TestOpenAPI(t *testing.T) {
 		}
 	}
 }
+
+// Tabs whose names sanitize alike, a hidden id, and columns that clash with pagination
+// or repeat must still produce unique operations and parameters.
+func TestOpenAPIEdgeCases(t *testing.T) {
+	cfg := &Config{
+		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+			"A B": {Ops: []string{"read"}},
+			"A_B": {Ops: []string{"read"}, Hidden: []string{"id"}},
+		}}},
+		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{
+		"SS/A B": {{"id", "limit", "name", "name"}},
+		"SS/A_B": {{"id", "name"}},
+	}}
+	_, body := call(t, (&API{cfg: cfg, svc: newService(cfg, store)}).routes(), "GET", "/openapi.json", "admin-key", "")
+	var spec struct {
+		Paths map[string]map[string]struct {
+			OperationID string `json:"operationId"`
+			Parameters  []struct {
+				Name string `json:"name"`
+			} `json:"parameters"`
+		} `json:"paths"`
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]any `json:"properties"`
+				Required   []string       `json:"required"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal([]byte(body), &spec); err != nil {
+		t.Fatal(err)
+	}
+	list1, list2 := spec.Paths["/v1/shop/A%20B"]["get"], spec.Paths["/v1/shop/A_B"]["get"]
+	if list1.OperationID != "shop_A_B_list" || list2.OperationID != "shop_A_B_2_list" {
+		t.Fatalf("operation ids: %q %q", list1.OperationID, list2.OperationID)
+	}
+	var names []string
+	for _, p := range list1.Parameters {
+		names = append(names, p.Name)
+	}
+	if want := []string{"limit", "offset", "id", "name"}; !slices.Equal(names, want) {
+		t.Errorf("params %v, want %v", names, want)
+	}
+	if s := spec.Components.Schemas["shop_A_B"]; !slices.Contains(s.Required, "id") || s.Properties["id"] == nil {
+		t.Errorf("visible id not in schema: %+v", s)
+	}
+	if s := spec.Components.Schemas["shop_A_B_2"]; slices.Contains(s.Required, "id") || s.Properties["id"] != nil {
+		t.Errorf("hidden id advertised: %+v", s)
+	}
+}
