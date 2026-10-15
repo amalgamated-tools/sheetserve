@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -166,5 +167,116 @@ func TestColName(t *testing.T) {
 		if got := colName(i); got != want {
 			t.Errorf("colName(%d) = %s, want %s", i, got, want)
 		}
+	}
+}
+
+func TestOpenAPI(t *testing.T) {
+	h := newTestAPI(t)
+	if status, _ := call(t, h, "GET", "/openapi.json", "", ""); status != 401 {
+		t.Fatalf("no key: got %d, want 401", status)
+	}
+	status, body := call(t, h, "GET", "/openapi.json", "web-key", "")
+	var spec struct {
+		OpenAPI string                    `json:"openapi"`
+		Paths   map[string]map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(body), &spec); status != 200 || err != nil || spec.OpenAPI != "3.1.0" {
+		t.Fatalf("spec: %d %v %s", status, err, body)
+	}
+	for path, want := range map[string][]string{
+		"/v1/shop/Products":      {"get"},
+		"/v1/shop/Products/{id}": {"get"},
+		"/v1/shop/Orders":        {"get"}, // tab allows create, but the key is read-only
+		"/v1/shop/Orders/{id}":   {"get"},
+	} {
+		got := slices.Sorted(maps.Keys(spec.Paths[path]))
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: methods %v, want %v", path, got, want)
+		}
+	}
+	if strings.Contains(body, "cost") {
+		t.Fatalf("hidden column leaked into spec: %s", body)
+	}
+
+	_, body = call(t, h, "GET", "/openapi.json", "admin-key", "")
+	for _, want := range []string{`"post"`, `"patch"`, `"delete"`, `"qty"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("admin spec missing %s", want)
+		}
+	}
+}
+
+// Tabs whose names sanitize alike, a hidden id, and columns that clash with pagination
+// or repeat must still produce unique operations and parameters.
+func TestOpenAPIEdgeCases(t *testing.T) {
+	cfg := &Config{
+		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+			"A B": {Ops: []string{"read"}},
+			"A_B": {Ops: []string{"read"}, Hidden: []string{"id"}},
+		}}},
+		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{
+		"SS/A B": {{"id", "limit", "name", "name"}},
+		"SS/A_B": {{"id", "name"}},
+	}}
+	_, body := call(t, (&API{cfg: cfg, svc: newService(cfg, store)}).routes(), "GET", "/openapi.json", "admin-key", "")
+	var spec struct {
+		Paths map[string]map[string]struct {
+			OperationID string `json:"operationId"`
+			Parameters  []struct {
+				Name string `json:"name"`
+			} `json:"parameters"`
+		} `json:"paths"`
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]any `json:"properties"`
+				Required   []string       `json:"required"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal([]byte(body), &spec); err != nil {
+		t.Fatal(err)
+	}
+	list1, list2 := spec.Paths["/v1/shop/A%20B"]["get"], spec.Paths["/v1/shop/A_B"]["get"]
+	if list1.OperationID != "shop_A_B_list" || list2.OperationID != "shop_A_B_2_list" {
+		t.Fatalf("operation ids: %q %q", list1.OperationID, list2.OperationID)
+	}
+	var names []string
+	for _, p := range list1.Parameters {
+		names = append(names, p.Name)
+	}
+	if want := []string{"limit", "offset", "id", "name"}; !slices.Equal(names, want) {
+		t.Errorf("params %v, want %v", names, want)
+	}
+	if s := spec.Components.Schemas["shop_A_B"]; !slices.Contains(s.Required, "id") || s.Properties["id"] == nil {
+		t.Errorf("visible id not in schema: %+v", s)
+	}
+	if s := spec.Components.Schemas["shop_A_B_2"]; slices.Contains(s.Required, "id") || s.Properties["id"] != nil {
+		t.Errorf("hidden id advertised: %+v", s)
+	}
+}
+
+// A tab that fails to load keeps its name reserved, so the next tab can't take over its tools.
+func TestFailedTabKeepsName(t *testing.T) {
+	cfg := &Config{
+		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+			"A B": {Ops: []string{"read"}},
+			"A_B": {Ops: []string{"read"}},
+		}}},
+		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{"SS/A_B": {{"id", "name"}}}} // "A B" has no id column
+	a := &API{cfg: cfg, svc: newService(cfg, store)}
+	var names []string
+	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _ string, _, _ []string) { names = append(names, name) })
+	if !slices.Equal(names, []string{"shop_A_B_2"}) {
+		t.Fatalf("names %v, want [shop_A_B_2]", names)
 	}
 }
