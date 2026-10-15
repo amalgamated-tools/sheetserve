@@ -49,18 +49,19 @@ func (a *API) eachTab(ctx context.Context, key *Key, fn func(name, sheet, tab st
 			if len(ops) == 0 {
 				continue
 			}
-			snap, err := a.svc.load(ctx, sheet, tab, false)
-			if err != nil {
-				slog.WarnContext(ctx, "skipping tab", "sheet", sheet, "tab", tab, "err", err)
-				continue
-			}
-			// "shop/A B" and "shop/A_B" both sanitize to shop_A_B; suffix later ones.
+			// "shop/A B" and "shop/A_B" both sanitize to shop_A_B; suffix later ones. Names are
+			// claimed before loading so a tab that fails to load can't hand its name to another.
 			base := toolSafe.ReplaceAllString(sheet+"_"+tab, "_")
 			name := base
 			for i := 2; used[name]; i++ {
 				name = base + "_" + strconv.Itoa(i)
 			}
 			used[name] = true
+			snap, err := a.svc.load(ctx, sheet, tab, false)
+			if err != nil {
+				slog.WarnContext(ctx, "skipping tab", "sheet", sheet, "tab", tab, "err", err)
+				continue
+			}
 			var cols []string
 			for _, c := range a.svc.visibleColumns(snap, sheet, tab) {
 				if !slices.Contains(cols, c) {

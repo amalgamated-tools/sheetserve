@@ -259,3 +259,24 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 		t.Errorf("hidden id advertised: %+v", s)
 	}
 }
+
+// A tab that fails to load keeps its name reserved, so the next tab can't take over its tools.
+func TestFailedTabKeepsName(t *testing.T) {
+	cfg := &Config{
+		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+			"A B": {Ops: []string{"read"}},
+			"A_B": {Ops: []string{"read"}},
+		}}},
+		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{"SS/A_B": {{"id", "name"}}}} // "A B" has no id column
+	a := &API{cfg: cfg, svc: newService(cfg, store)}
+	var names []string
+	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _ string, _, _ []string) { names = append(names, name) })
+	if !slices.Equal(names, []string{"shop_A_B_2"}) {
+		t.Fatalf("names %v, want [shop_A_B_2]", names)
+	}
+}
