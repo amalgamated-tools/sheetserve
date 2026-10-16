@@ -140,6 +140,12 @@ type cond struct {
 // List returns rows matching every filter, sorted by sort ("col" or "-col" for descending), then paged.
 // Filter keys are "col" or "col[op]".
 func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, sort string, limit, offset int) ([]map[string]any, error) {
+	if limit < 0 {
+		return nil, badRequest("invalid limit")
+	}
+	if offset < 0 {
+		return nil, badRequest("invalid offset")
+	}
 	snap, err := s.load(ctx, sheet, tab, false)
 	if err != nil {
 		return nil, err

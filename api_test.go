@@ -155,6 +155,20 @@ func TestMCP(t *testing.T) {
 		t.Fatalf("hidden column leaked into tool schema: %s", body)
 	}
 
+	for _, tc := range []struct {
+		arguments string
+		want      string
+	}{
+		{`{"offset":-1}`, "invalid offset"},
+		{`{"limit":-1}`, "invalid limit"},
+	} {
+		_, body = call(t, h, "POST", "/mcp", "web-key",
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"shop_Orders_list","arguments":`+tc.arguments+`}}`)
+		if !strings.Contains(body, `"isError":true`) || !strings.Contains(body, tc.want) {
+			t.Fatalf("negative pagination %s: expected MCP error containing %q, got %s", tc.arguments, tc.want, body)
+		}
+	}
+
 	_, body = call(t, h, "POST", "/mcp", "admin-key",
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"shop_Orders_create","arguments":{"item":"tea"}}}`)
 	if !strings.Contains(body, `\"item\":\"tea\"`) || strings.Contains(body, `"isError":true`) {
