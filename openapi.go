@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -51,14 +52,19 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 				params := []any{
 					obj{"name": "limit", "in": "query", "schema": obj{"type": "integer", "minimum": 0}},
 					obj{"name": "offset", "in": "query", "schema": obj{"type": "integer", "minimum": 0}},
+					obj{"name": "sort", "in": "query", "description": "column to sort by; prefix with - for descending",
+						"schema": obj{"type": "string", "enum": sortValues(cols)}},
 				}
 				for _, c := range cols {
-					if c == "limit" || c == "offset" { // API.list reads these only as pagination
+					if c == "limit" || c == "offset" || c == "sort" { // API.list reads these only as list options
 						continue
 					}
 					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": obj{"type": "string"}})
 				}
-				coll["get"] = operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
+				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
+				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
+					strings.Join(filterOps, ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings; contains ignores case."
+				coll["get"] = list
 				item["get"] = operation(name+"_get", "Get one row by id", idParam, nil, "200", ref)
 			case "create":
 				coll["post"] = operation(name+"_create", "Add a row; the id is assigned by the server", nil, input, "201", ref)
@@ -84,6 +90,14 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 		"paths":      paths,
 		"components": obj{"schemas": schemas, "securitySchemes": obj{"bearerAuth": obj{"type": "http", "scheme": "bearer"}}},
 	}
+}
+
+func sortValues(cols []string) []any {
+	var out []any
+	for _, c := range cols {
+		out = append(out, c, "-"+c)
+	}
+	return out
 }
 
 func operation(id, summary string, params []any, body obj, status string, result obj) obj {

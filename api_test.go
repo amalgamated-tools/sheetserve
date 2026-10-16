@@ -249,7 +249,7 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 	for _, p := range list1.Parameters {
 		names = append(names, p.Name)
 	}
-	if want := []string{"limit", "offset", "id", "name"}; !slices.Equal(names, want) {
+	if want := []string{"limit", "offset", "sort", "id", "name"}; !slices.Equal(names, want) {
 		t.Errorf("params %v, want %v", names, want)
 	}
 	if s := spec.Components.Schemas["shop_A_B"]; !slices.Contains(s.Required, "id") || s.Properties["id"] == nil {
@@ -278,5 +278,87 @@ func TestFailedTabKeepsName(t *testing.T) {
 	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _ string, _, _ []string) { names = append(names, name) })
 	if !slices.Equal(names, []string{"shop_A_B_2"}) {
 		t.Fatalf("names %v, want [shop_A_B_2]", names)
+	}
+}
+
+func TestListSortAndFilterOps(t *testing.T) {
+	cfg := &Config{
+		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+			"Orders": {Ops: []string{"read"}, Hidden: []string{"cost"}},
+		}}},
+		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{"SS/Orders": {
+		{"id", "item", "qty", "cost", "a[b]"},
+		{"o1", "Green Tea", "10", "1", "x"},
+		{"o2", "mug", "9", "2", "y"},
+		{"o3", "tea pot", "2", "3", "z"},
+	}}}
+	h := (&API{cfg: cfg, svc: newService(cfg, store)}).routes()
+	ids := func(body string) string {
+		var rows []map[string]any
+		if err := json.Unmarshal([]byte(body), &rows); err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		var out []string
+		for _, r := range rows {
+			out = append(out, r["id"].(string))
+		}
+		return strings.Join(out, ",")
+	}
+	for _, c := range []struct {
+		query  string
+		status int
+		want   string // ids, or a substring of the error
+	}{
+		{"sort=qty", 200, "o3,o2,o1"}, // numeric, not "10" < "2"
+		{"sort=-qty", 200, "o1,o2,o3"},
+		{"sort=item", 200, "o1,o2,o3"},
+		{"qty[gt]=2&sort=qty", 200, "o2,o1"},
+		{"qty[lte]=9&qty[ne]=2", 200, "o2"},
+		{"item[contains]=TEA&sort=-qty&limit=1&offset=1", 200, "o3"},
+		{"a[b]=y", 200, "o2"}, // a column whose name looks like an operator still matches exactly
+		{"qty[like]=1", 400, "unknown operator"},
+		{"cost[gt]=0", 400, "unknown column"},
+		{"sort=-cost", 400, "unknown column"},
+	} {
+		status, body := call(t, h, "GET", "/v1/shop/Orders?"+c.query, "admin-key", "")
+		got := body
+		if status == 200 {
+			got = ids(body)
+		}
+		if status != c.status || (status == 200 && got != c.want) || !strings.Contains(got, c.want) {
+			t.Errorf("%s: got %d %s, want %d %s", c.query, status, got, c.status, c.want)
+		}
+	}
+}
+
+func TestCORS(t *testing.T) {
+	cfg := &Config{CORSOrigins: []string{"https://app.example"}}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	h := (&API{cfg: cfg, svc: newService(cfg, &fakeStore{})}).routes()
+	req := func(method, origin string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/v1/shop/Orders", nil)
+		r.Header.Set("Origin", origin)
+		r.Header.Set("Access-Control-Request-Method", "POST")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	if rec := req("OPTIONS", "https://app.example"); rec.Code != 204 ||
+		rec.Header().Get("Access-Control-Allow-Origin") != "https://app.example" ||
+		!strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
+		t.Errorf("preflight: %d %v", rec.Code, rec.Header())
+	}
+	if rec := req("GET", "https://app.example"); rec.Code != 401 || rec.Header().Get("Access-Control-Allow-Origin") == "" {
+		t.Errorf("actual request should carry CORS headers: %d %v", rec.Code, rec.Header())
+	}
+	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("unlisted origin allowed: %d %v", rec.Code, rec.Header())
 	}
 }

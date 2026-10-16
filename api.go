@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,30 @@ func (a *API) routes() http.Handler {
 	mux.Handle("DELETE /v1/{sheet}/{tab}/{id}", a.endpoint("delete", a.delete))
 	mux.HandleFunc("GET /openapi.json", a.openAPIHandler)
 	mux.Handle("/mcp", a.mcpHandler())
-	return mux
+	return a.cors(mux)
+}
+
+// cors lets browsers on the configured origins call the API. Keys travel in the Authorization
+// header, not cookies, so credentials mode is never needed.
+func (a *API) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" || !slices.ContainsFunc(a.cfg.CORSOrigins, func(o string) bool { return o == "*" || o == origin }) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", origin)
+		h.Add("Vary", "Origin")
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id")
+			h.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // endpoint authenticates, authorizes, runs h, and logs the outcome (including refusal reasons).
@@ -73,7 +97,7 @@ func errorResponse(err error) (status int, body any, reason string) {
 
 func (a *API) list(r *http.Request, sheet, tab string) (int, any, error) {
 	q := r.URL.Query()
-	limit, offset := 0, 0
+	limit, offset, sort := 0, 0, ""
 	filter := map[string]string{}
 	for k := range q {
 		var err error
@@ -82,6 +106,8 @@ func (a *API) list(r *http.Request, sheet, tab string) (int, any, error) {
 			limit, err = strconv.Atoi(q.Get(k))
 		case "offset":
 			offset, err = strconv.Atoi(q.Get(k))
+		case "sort":
+			sort = q.Get(k)
 		default:
 			filter[k] = q.Get(k)
 		}
@@ -89,7 +115,7 @@ func (a *API) list(r *http.Request, sheet, tab string) (int, any, error) {
 			return 0, nil, badRequest("invalid %s", k)
 		}
 	}
-	rows, err := a.svc.List(r.Context(), sheet, tab, filter, limit, offset)
+	rows, err := a.svc.List(r.Context(), sheet, tab, filter, sort, limit, offset)
 	return http.StatusOK, rows, err
 }
 

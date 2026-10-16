@@ -18,6 +18,7 @@ var allOps = []string{"read", "create", "update", "delete"}
 type Config struct {
 	Listen       string                 `yaml:"listen"`
 	CacheTTL     time.Duration          `yaml:"cache_ttl"`
+	CORSOrigins  []string               `yaml:"cors_origins"`
 	Spreadsheets map[string]Spreadsheet `yaml:"spreadsheets"`
 	Keys         []Key                  `yaml:"keys"`
 
