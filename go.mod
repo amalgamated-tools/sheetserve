@@ -1,4 +1,4 @@
-module github.com/veverkap/sheetserve
+module github.com/amalgamated-tools/sheetserve
 
 go 1.27.0
 
