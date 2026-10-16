@@ -31,7 +31,7 @@ You configure it with one YAML file.
 ```sh
 curl -H "Authorization: Bearer $KEY" localhost:8080/v1/shop/Products
 curl -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?item=mug&limit=10"
-curl -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?qty[gte]=2&item[contains]=tea&sort=-qty"
+curl -g -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?qty[gte]=2&item[contains]=tea&sort=-qty"
 curl -H "Authorization: Bearer $KEY" localhost:8080/v1/shop/Orders/$ID
 curl -H "Authorization: Bearer $KEY" -d '{"item":"mug","qty":2}' localhost:8080/v1/shop/Orders
 curl -H "Authorization: Bearer $KEY" -X PATCH -d '{"qty":3}' localhost:8080/v1/shop/Orders/$ID
