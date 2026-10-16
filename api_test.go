@@ -263,7 +263,14 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 	for _, p := range list1.Parameters {
 		names = append(names, p.Name)
 	}
-	if want := []string{"limit", "offset", "sort", "id", "name"}; !slices.Equal(names, want) {
+	want := []string{"limit", "offset", "sort"}
+	for _, col := range []string{"id", "name"} {
+		want = append(want, col)
+		for _, op := range filterOps {
+			want = append(want, col+"["+op+"]")
+		}
+	}
+	if !slices.Equal(names, want) {
 		t.Errorf("params %v, want %v", names, want)
 	}
 	if s := spec.Components.Schemas["shop_A_B"]; !slices.Contains(s.Required, "id") || s.Properties["id"] == nil {

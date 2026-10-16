@@ -60,6 +60,10 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 						continue
 					}
 					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": obj{"type": "string"}})
+					for _, filterOp := range filterOps {
+						params = append(params, obj{"name": c + "[" + filterOp + "]", "in": "query",
+							"description": "filter using " + filterOp, "schema": obj{"type": "string"}})
+					}
 				}
 				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
 				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
