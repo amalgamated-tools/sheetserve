@@ -1,5 +1,6 @@
 # listen: ":8080"        # defaults to $PORT, then :8080
 cache_ttl: 60s           # 0 disables; writes always clear the tab's cache
+# cors_origins: ["https://app.example.com"]   # let these browser origins call the API; off by default
 
 spreadsheets:
   shop:                                  # name used in URLs: /v1/shop/...

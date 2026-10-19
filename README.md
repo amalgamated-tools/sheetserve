@@ -31,13 +31,19 @@ You configure it with one YAML file.
 ```sh
 curl -H "Authorization: Bearer $KEY" localhost:8080/v1/shop/Products
 curl -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?item=mug&limit=10"
+curl -g -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?qty[gte]=2&item[contains]=tea&sort=-qty"
 curl -H "Authorization: Bearer $KEY" localhost:8080/v1/shop/Orders/$ID
 curl -H "Authorization: Bearer $KEY" -d '{"item":"mug","qty":2}' localhost:8080/v1/shop/Orders
 curl -H "Authorization: Bearer $KEY" -X PATCH -d '{"qty":3}' localhost:8080/v1/shop/Orders/$ID
 curl -H "Authorization: Bearer $KEY" -X DELETE localhost:8080/v1/shop/Orders/$ID
 ```
 
-Query parameters other than `limit` and `offset` are filters. A row matches only when the column value is exactly equal.
+Query parameters other than `limit`, `offset` and `sort` are filters. `col=value` matches the value exactly.
+`col[op]=value` uses an operator: `eq`, `ne`, `gt`, `gte`, `lt`, `lte` or `contains`.
+`gt`, `gte`, `lt` and `lte` compare numerically when both values are numbers, and as strings otherwise, so ISO dates work.
+`contains` ignores case. A row must match every filter.
+
+`sort=col` sorts ascending and `sort=-col` sorts descending, with the same comparison rules. Sorting happens before `limit` and `offset`.
 
 The API returns these status codes: `401` for a missing or invalid key, `403` when the key or tab does not allow the operation,
 `404` for an unknown tab or row, `400` for an unknown or hidden column, and `502` for Google API errors.
@@ -46,10 +52,21 @@ Google API error details go to the log only.
 Writes use `RAW` input, so the server never runs client data as a formula. An update changes only the cells you send,
 so formulas in other columns stay in place.
 
+## Browsers (CORS)
+
+CORS is off by default. To let a web app call the API, list its origins in the config:
+
+```yaml
+cors_origins: ["https://app.example.com"]   # or ["*"]
+```
+
+A key used in a browser is visible to anyone who loads the page. Give browser apps a read-only key scoped to the tabs they need.
+
 ## MCP
 
 Point an MCP client at `http://host:8080/mcp` and send `Authorization: Bearer <key>`.
 Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and `_delete`, filtered by what the key can do.
+`_list` takes the same filter operators and `sort` as the REST API.
 
 ## Deploy
 

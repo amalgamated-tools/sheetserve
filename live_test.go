@@ -102,7 +102,7 @@ func TestLive(t *testing.T) {
 	if _, err := svc.Get(ctx, "live", tab, idA); err != errNotFound {
 		t.Fatalf("deleted row still readable: %v", err)
 	}
-	rows, err := svc.List(ctx, "live", tab, map[string]string{"item": "tea"}, 0, 0)
+	rows, err := svc.List(ctx, "live", tab, map[string]string{"item": "tea"}, "", 0, 0)
 	if err != nil || len(rows) != 1 || rows[0]["id"] != idB || rows[0]["qty"] != float64(7) {
 		t.Fatalf("list after delete: %v %v", rows, err)
 	}

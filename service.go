@@ -1,12 +1,15 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"fmt"
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,40 +128,128 @@ func findID(snap snapshot, id string) int {
 	})
 }
 
-func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, limit, offset int) ([]map[string]any, error) {
+// filterOps are the operators a filter key can carry as a suffix, as in "qty[gte]". No suffix means eq.
+var filterOps = []string{"eq", "ne", "gt", "gte", "lt", "lte", "contains"}
+
+type cond struct {
+	col int
+	op  string
+	val string
+}
+
+// List returns rows matching every filter, sorted by sort ("col" or "-col" for descending), then paged.
+// Filter keys are "col" or "col[op]". An exact column name always wins over a sort prefix or filter
+// suffix, so columns named "-x" or "x[ne]" stay reachable.
+func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, sort string, limit, offset int) ([]map[string]any, error) {
+	if limit < 0 {
+		return nil, badRequest("invalid limit")
+	}
+	if offset < 0 {
+		return nil, badRequest("invalid offset")
+	}
 	snap, err := s.load(ctx, sheet, tab, false)
 	if err != nil {
 		return nil, err
 	}
 	visible := s.visibleColumns(snap, sheet, tab)
-	cols := map[string]int{}
-	for col := range filter {
-		// Filtering on a hidden column would leak its values.
-		if !slices.Contains(visible, col) {
-			return nil, badRequest("unknown column %q", col)
+	// Filtering or sorting on a hidden column would leak its values.
+	column := func(name string) (int, error) {
+		if !slices.Contains(visible, name) {
+			return 0, badRequest("unknown column %q", name)
 		}
-		cols[col] = slices.Index(snap.header, col)
+		return slices.Index(snap.header, name), nil
+	}
+	var conds []cond
+	for k, v := range filter {
+		name, op := k, "eq"
+		if j := strings.LastIndex(k, "["); j > 0 && strings.HasSuffix(k, "]") && !slices.Contains(visible, k) {
+			name, op = k[:j], k[j+1:len(k)-1]
+			if !slices.Contains(filterOps, op) {
+				return nil, badRequest("unknown operator %q (want one of %v)", op, filterOps)
+			}
+		}
+		i, err := column(name)
+		if err != nil {
+			return nil, err
+		}
+		conds = append(conds, cond{i, op, v})
+	}
+	var matched [][]any
+	for _, row := range snap.rows {
+		if sort == "" && limit > 0 && len(matched) == offset+limit {
+			break // unsorted: the page is already complete
+		}
+		if !slices.ContainsFunc(conds, func(c cond) bool { return !c.match(cell(row, c.col)) }) {
+			matched = append(matched, row)
+		}
+	}
+	if sort != "" {
+		name, desc := sort, false
+		if !slices.Contains(visible, sort) {
+			name, desc = strings.CutPrefix(sort, "-")
+		}
+		i, err := column(name)
+		if err != nil {
+			return nil, err
+		}
+		slices.SortStableFunc(matched, func(a, b []any) int {
+			c := compare(cell(a, i), cell(b, i))
+			if desc {
+				return -c
+			}
+			return c
+		})
+	}
+	matched = matched[min(offset, len(matched)):]
+	if limit > 0 {
+		matched = matched[:min(limit, len(matched))]
 	}
 	out := []map[string]any{}
-	for _, row := range snap.rows {
-		match := true
-		for col, want := range filter {
-			i := cols[col]
-			match = match && i < len(row) && fmt.Sprint(row[i]) == want
-		}
-		if !match {
-			continue
-		}
-		if offset > 0 {
-			offset--
-			continue
-		}
+	for _, row := range matched {
 		out = append(out, s.toObject(snap, row, sheet, tab))
-		if limit > 0 && len(out) == limit {
-			break
-		}
 	}
 	return out, nil
+}
+
+func cell(row []any, i int) string {
+	if i < len(row) {
+		return fmt.Sprint(row[i])
+	}
+	return ""
+}
+
+func (c cond) match(v string) bool {
+	switch c.op {
+	case "ne":
+		return v != c.val
+	case "gt":
+		return compare(v, c.val) > 0
+	case "gte":
+		return compare(v, c.val) >= 0
+	case "lt":
+		return compare(v, c.val) < 0
+	case "lte":
+		return compare(v, c.val) <= 0
+	case "contains":
+		return strings.Contains(strings.ToLower(v), strings.ToLower(c.val))
+	}
+	return v == c.val
+}
+
+// compare orders numbers numerically before all non-numbers, which order as strings (so ISO dates
+// work). Ranking numbers first keeps the order consistent on mixed columns.
+func compare(a, b string) int {
+	x, errA := strconv.ParseFloat(a, 64)
+	y, errB := strconv.ParseFloat(b, 64)
+	switch {
+	case errA == nil && errB == nil:
+		return cmp.Compare(x, y)
+	case errA == nil:
+		return -1
+	case errB == nil:
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 func (s *Service) Get(ctx context.Context, sheet, tab, id string) (map[string]any, error) {
