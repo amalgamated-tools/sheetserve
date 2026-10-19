@@ -138,7 +138,8 @@ type cond struct {
 }
 
 // List returns rows matching every filter, sorted by sort ("col" or "-col" for descending), then paged.
-// Filter keys are "col" or "col[op]".
+// Filter keys are "col" or "col[op]". An exact column name always wins over a sort prefix or filter
+// suffix, so columns named "-x" or "x[ne]" stay reachable.
 func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, sort string, limit, offset int) ([]map[string]any, error) {
 	if limit < 0 {
 		return nil, badRequest("invalid limit")
@@ -161,8 +162,8 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 	var conds []cond
 	for k, v := range filter {
 		name, op := k, "eq"
-		if base, suffix, ok := strings.Cut(k, "["); ok && strings.HasSuffix(suffix, "]") && !slices.Contains(visible, k) {
-			name, op = base, strings.TrimSuffix(suffix, "]")
+		if j := strings.LastIndex(k, "["); j > 0 && strings.HasSuffix(k, "]") && !slices.Contains(visible, k) {
+			name, op = k[:j], k[j+1:len(k)-1]
 			if !slices.Contains(filterOps, op) {
 				return nil, badRequest("unknown operator %q (want one of %v)", op, filterOps)
 			}
@@ -175,12 +176,18 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 	}
 	var matched [][]any
 	for _, row := range snap.rows {
+		if sort == "" && limit > 0 && len(matched) == offset+limit {
+			break // unsorted: the page is already complete
+		}
 		if !slices.ContainsFunc(conds, func(c cond) bool { return !c.match(cell(row, c.col)) }) {
 			matched = append(matched, row)
 		}
 	}
 	if sort != "" {
-		name, desc := strings.CutPrefix(sort, "-")
+		name, desc := sort, false
+		if !slices.Contains(visible, sort) {
+			name, desc = strings.CutPrefix(sort, "-")
+		}
 		i, err := column(name)
 		if err != nil {
 			return nil, err
@@ -229,12 +236,18 @@ func (c cond) match(v string) bool {
 	return v == c.val
 }
 
-// compare orders numerically when both values are numbers, otherwise as strings (so ISO dates work).
+// compare orders numbers numerically before all non-numbers, which order as strings (so ISO dates
+// work). Ranking numbers first keeps the order consistent on mixed columns.
 func compare(a, b string) int {
 	x, errA := strconv.ParseFloat(a, 64)
 	y, errB := strconv.ParseFloat(b, 64)
-	if errA == nil && errB == nil {
+	switch {
+	case errA == nil && errB == nil:
 		return cmp.Compare(x, y)
+	case errA == nil:
+		return -1
+	case errB == nil:
+		return 1
 	}
 	return strings.Compare(a, b)
 }

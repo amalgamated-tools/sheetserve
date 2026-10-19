@@ -234,7 +234,7 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &fakeStore{tabs: map[string][][]any{
-		"SS/A B": {{"id", "limit", "name", "name"}},
+		"SS/A B": {{"id", "limit", "name", "name", "name[eq]"}},
 		"SS/A_B": {{"id", "name"}},
 	}}
 	_, body := call(t, (&API{cfg: cfg, svc: newService(cfg, store)}).routes(), "GET", "/openapi.json", "admin-key", "")
@@ -264,10 +264,12 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 		names = append(names, p.Name)
 	}
 	want := []string{"limit", "offset", "sort"}
-	for _, col := range []string{"id", "name"} {
+	for _, col := range []string{"id", "name", "name[eq]"} {
 		want = append(want, col)
 		for _, op := range filterOps {
-			want = append(want, col+"["+op+"]")
+			if col+"["+op+"]" != "name[eq]" { // listed once, as its own column
+				want = append(want, col+"["+op+"]")
+			}
 		}
 	}
 	if !slices.Equal(names, want) {
@@ -313,10 +315,10 @@ func TestListSortAndFilterOps(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &fakeStore{tabs: map[string][][]any{"SS/Orders": {
-		{"id", "item", "qty", "cost", "a[b]"},
-		{"o1", "Green Tea", "10", "1", "x"},
-		{"o2", "mug", "9", "2", "y"},
-		{"o3", "tea pot", "2", "3", "z"},
+		{"id", "item", "qty", "cost", "a[b]", "-n"},
+		{"o1", "Green Tea", "10", "1", "x", "3"},
+		{"o2", "mug", "9", "2", "y", "1"},
+		{"o3", "tea pot", "2", "3", "z", "2"},
 	}}}
 	h := (&API{cfg: cfg, svc: newService(cfg, store)}).routes()
 	ids := func(body string) string {
@@ -342,6 +344,10 @@ func TestListSortAndFilterOps(t *testing.T) {
 		{"qty[lte]=9&qty[ne]=2", 200, "o2"},
 		{"item[contains]=TEA&sort=-qty&limit=1&offset=1", 200, "o3"},
 		{"a[b]=y", 200, "o2"}, // a column whose name looks like an operator still matches exactly
+		{"a[b][ne]=x", 200, "o2,o3"},
+		{"sort=-n", 200, "o2,o3,o1"},  // the column named -n, ascending
+		{"sort=--n", 200, "o1,o3,o2"}, // ...and descending
+		{"item[contains]=e&limit=1&offset=1", 200, "o3"},
 		{"qty[like]=1", 400, "unknown operator"},
 		{"cost[gt]=0", 400, "unknown column"},
 		{"sort=-cost", 400, "unknown column"},
@@ -379,7 +385,17 @@ func TestCORS(t *testing.T) {
 	if rec := req("GET", "https://app.example"); rec.Code != 401 || rec.Header().Get("Access-Control-Allow-Origin") == "" {
 		t.Errorf("actual request should carry CORS headers: %d %v", rec.Code, rec.Header())
 	}
-	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" ||
+		rec.Header().Get("Vary") != "Origin" {
 		t.Errorf("unlisted origin allowed: %d %v", rec.Code, rec.Header())
+	}
+}
+
+// Mixed columns must sort consistently: numbers numerically, then everything else as strings.
+func TestCompareMixed(t *testing.T) {
+	got := []string{"10", "1x", "", "2"}
+	slices.SortStableFunc(got, compare)
+	if want := []string{"2", "10", "", "1x"}; !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

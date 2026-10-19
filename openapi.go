@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -61,13 +62,16 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 					}
 					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": obj{"type": "string"}})
 					for _, filterOp := range filterOps {
+						if slices.Contains(cols, c+"["+filterOp+"]") { // the exact column wins; see Service.List
+							continue
+						}
 						params = append(params, obj{"name": c + "[" + filterOp + "]", "in": "query",
 							"description": "filter using " + filterOp, "schema": obj{"type": "string"}})
 					}
 				}
 				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
 				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
-					strings.Join(filterOps, ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings; contains ignores case."
+					strings.Join(filterOps, ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case."
 				coll["get"] = list
 				item["get"] = operation(name+"_get", "Get one row by id", idParam, nil, "200", ref)
 			case "create":
@@ -99,7 +103,10 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 func sortValues(cols []string) []any {
 	var out []any
 	for _, c := range cols {
-		out = append(out, c, "-"+c)
+		out = append(out, c)
+		if !slices.Contains(cols, "-"+c) { // a column named -c wins; see Service.List
+			out = append(out, "-"+c)
+		}
 	}
 	return out
 }

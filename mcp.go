@@ -98,7 +98,7 @@ func (a *API) addTabTools(srv *mcp.Server, key *Key, name, sheet, tab string, op
 				filter["properties"].(map[string]any)[c] = map[string]any{"type": "string"}
 			}
 			addTool(srv, key, name+"_list", "List rows in "+where+". A filter key \"col\" matches exactly; \"col[op]\" uses op, one of "+
-				strings.Join(filterOps, ", ")+". gt/gte/lt/lte compare numbers numerically, else as strings; contains ignores case. "+
+				strings.Join(filterOps, ", ")+". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case. "+
 				"sort is a column name, prefixed with - for descending.",
 				object(map[string]any{"filter": filter, "sort": map[string]any{"type": "string"},
 					"limit": map[string]any{"type": "integer"}, "offset": map[string]any{"type": "integer"}}),
