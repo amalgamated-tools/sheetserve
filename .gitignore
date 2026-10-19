@@ -1,3 +1,4 @@
 config.yaml
 service-account*.json
 /sheetserve
+sheetserve.db*

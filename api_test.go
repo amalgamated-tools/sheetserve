@@ -37,6 +37,17 @@ func (f *fakeStore) DeleteRow(_ context.Context, id, tab string, row int) error 
 	return nil
 }
 
+func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
+	var out []string
+	for k := range f.tabs {
+		if tab, ok := strings.CutPrefix(k, id+"/"); ok {
+			out = append(out, tab)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func newTestAPI(t *testing.T) http.Handler {
 	t.Helper()
 	cfg := &Config{
