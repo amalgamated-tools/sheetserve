@@ -1,4 +1,4 @@
-package main
+package hosted
 
 import (
 	"context"
@@ -12,6 +12,9 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 // DB holds hosted-mode state: users, their sessions, and the per-user equivalent of config.yaml.
@@ -131,14 +134,14 @@ func (d *DB) newSession(ctx context.Context, userID int64) (string, error) {
 		return "", err
 	}
 	_, err := d.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)`,
-		hashKey(tok), userID, now.Add(sessionTTL).Unix())
+		config.HashKey(tok), userID, now.Add(sessionTTL).Unix())
 	return tok, err
 }
 
 // sessionUser returns the user behind a live session token, or ok=false.
 func (d *DB) sessionUser(ctx context.Context, tok string) (id int64, email string, ok bool, err error) {
 	err = d.QueryRowContext(ctx, `SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = ? AND s.expires_at > ?`, hashKey(tok), time.Now().Unix()).Scan(&id, &email)
+		WHERE s.token_hash = ? AND s.expires_at > ?`, config.HashKey(tok), time.Now().Unix()).Scan(&id, &email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", false, nil
 	}
@@ -146,7 +149,7 @@ func (d *DB) sessionUser(ctx context.Context, tok string) (id int64, email strin
 }
 
 func (d *DB) deleteSession(ctx context.Context, tok string) error {
-	_, err := d.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, hashKey(tok))
+	_, err := d.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, config.HashKey(tok))
 	return err
 }
 
@@ -164,21 +167,21 @@ type querier interface {
 }
 
 // userConfig builds userID's Config from the database, with listen/cache/CORS settings from global.
-func userConfig(ctx context.Context, q querier, userID int64, global *Config) (*Config, error) {
-	cfg := &Config{Listen: global.Listen, CacheTTL: global.CacheTTL, CORSOrigins: global.CORSOrigins,
-		Spreadsheets: map[string]Spreadsheet{}}
+func userConfig(ctx context.Context, q querier, userID int64, global *config.Config) (*config.Config, error) {
+	cfg := &config.Config{Listen: global.Listen, CacheTTL: global.CacheTTL, CORSOrigins: global.CORSOrigins,
+		Spreadsheets: map[string]config.Spreadsheet{}}
 	err := scan(ctx, q, `SELECT name, google_id FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 		var name, id string
 		if err := rows.Scan(&name, &id); err != nil {
 			return err
 		}
-		cfg.Spreadsheets[name] = Spreadsheet{ID: id, Tabs: map[string]TabRule{}}
+		cfg.Spreadsheets[name] = config.Spreadsheet{ID: id, Tabs: map[string]config.TabRule{}}
 		return nil
 	})
 	if err == nil {
 		err = scan(ctx, q, `SELECT sheet, tab, ops, hidden FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 			var sheet, tab, ops, hidden string
-			var rule TabRule
+			var rule config.TabRule
 			if err := rows.Scan(&sheet, &tab, &ops, &hidden); err != nil {
 				return err
 			}
@@ -191,7 +194,7 @@ func userConfig(ctx context.Context, q querier, userID int64, global *Config) (*
 	}
 	if err == nil {
 		err = scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
-			var k Key
+			var k config.Key
 			var tabs, ops string
 			if err := rows.Scan(&k.Hash, &k.Name, &tabs, &ops); err != nil {
 				return err
@@ -206,8 +209,8 @@ func userConfig(ctx context.Context, q querier, userID int64, global *Config) (*
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.validate(); err != nil {
-		return nil, badRequest("%v", err)
+	if err := cfg.Validate(); err != nil {
+		return nil, service.BadRequest("%v", err)
 	}
 	return cfg, nil
 }
@@ -238,7 +241,7 @@ func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 
 // update runs fn in a transaction and commits only if userID's resulting config still validates,
 // so validate() checks every dashboard change.
-func (d *DB) update(ctx context.Context, userID int64, global *Config, fn func(tx *sql.Tx) error) error {
+func (d *DB) update(ctx context.Context, userID int64, global *config.Config, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err

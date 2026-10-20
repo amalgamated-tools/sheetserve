@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 // fakeStore keeps tabs in memory, keyed by "spreadsheetID/tab".
@@ -50,25 +53,25 @@ func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
 
 func newTestAPI(t *testing.T) http.Handler {
 	t.Helper()
-	cfg := &Config{
+	cfg := &config.Config{
 		CacheTTL: time.Minute, // exercises cache invalidation on writes
-		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
 			"Products": {Ops: []string{"read"}, Hidden: []string{"cost"}},
-			"Orders":   {Ops: allOps},
+			"Orders":   {Ops: config.AllOps},
 		}}},
-		Keys: []Key{
-			{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}},
-			{Name: "web", Hash: hashKey("web-key"), Tabs: []string{"shop/*"}, Ops: []string{"read"}},
+		Keys: []config.Key{
+			{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}},
+			{Name: "web", Hash: config.HashKey("web-key"), Tabs: []string{"shop/*"}, Ops: []string{"read"}},
 		},
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	store := &fakeStore{tabs: map[string][][]any{
 		"SS/Products": {{"id", "name", "cost"}, {"p1", "mug", 3.5}},
 		"SS/Orders":   {{"id", "item", "qty"}},
 	}}
-	return (&API{cfg: cfg, svc: newService(cfg, store)}).routes()
+	return New(cfg, service.New(cfg, store)).Routes()
 }
 
 func call(t *testing.T, h http.Handler, method, path, key, body string) (int, string) {
@@ -187,14 +190,6 @@ func TestMCP(t *testing.T) {
 	}
 }
 
-func TestColName(t *testing.T) {
-	for i, want := range map[int]string{0: "A", 25: "Z", 26: "AA", 51: "AZ", 52: "BA", 701: "ZZ", 702: "AAA"} {
-		if got := colName(i); got != want {
-			t.Errorf("colName(%d) = %s, want %s", i, got, want)
-		}
-	}
-}
-
 func TestOpenAPI(t *testing.T) {
 	h := newTestAPI(t)
 	if status, _ := call(t, h, "GET", "/openapi.json", "", ""); status != 401 {
@@ -234,21 +229,21 @@ func TestOpenAPI(t *testing.T) {
 // Tabs whose names sanitize alike, a hidden id, and columns that clash with pagination
 // or repeat must still produce unique operations and parameters.
 func TestOpenAPIEdgeCases(t *testing.T) {
-	cfg := &Config{
-		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+	cfg := &config.Config{
+		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
 			"A B": {Ops: []string{"read"}},
 			"A_B": {Ops: []string{"read"}, Hidden: []string{"id"}},
 		}}},
-		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	store := &fakeStore{tabs: map[string][][]any{
 		"SS/A B": {{"id", "limit", "name", "name", "name[eq]"}},
 		"SS/A_B": {{"id", "name"}},
 	}}
-	_, body := call(t, (&API{cfg: cfg, svc: newService(cfg, store)}).routes(), "GET", "/openapi.json", "admin-key", "")
+	_, body := call(t, New(cfg, service.New(cfg, store)).Routes(), "GET", "/openapi.json", "admin-key", "")
 	var spec struct {
 		Paths map[string]map[string]struct {
 			OperationID string `json:"operationId"`
@@ -277,7 +272,7 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 	want := []string{"limit", "offset", "sort"}
 	for _, col := range []string{"id", "name", "name[eq]"} {
 		want = append(want, col)
-		for _, op := range filterOps {
+		for _, op := range service.FilterOperators() {
 			if col+"["+op+"]" != "name[eq]" { // listed once, as its own column
 				want = append(want, col+"["+op+"]")
 			}
@@ -296,18 +291,18 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 
 // A tab that fails to load keeps its name reserved, so the next tab can't take over its tools.
 func TestFailedTabKeepsName(t *testing.T) {
-	cfg := &Config{
-		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+	cfg := &config.Config{
+		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
 			"A B": {Ops: []string{"read"}},
 			"A_B": {Ops: []string{"read"}},
 		}}},
-		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	store := &fakeStore{tabs: map[string][][]any{"SS/A_B": {{"id", "name"}}}} // "A B" has no id column
-	a := &API{cfg: cfg, svc: newService(cfg, store)}
+	a := New(cfg, service.New(cfg, store))
 	var names []string
 	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _ string, _, _ []string) { names = append(names, name) })
 	if !slices.Equal(names, []string{"shop_A_B_2"}) {
@@ -316,13 +311,13 @@ func TestFailedTabKeepsName(t *testing.T) {
 }
 
 func TestListSortAndFilterOps(t *testing.T) {
-	cfg := &Config{
-		Spreadsheets: map[string]Spreadsheet{"shop": {ID: "SS", Tabs: map[string]TabRule{
+	cfg := &config.Config{
+		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
 			"Orders": {Ops: []string{"read"}, Hidden: []string{"cost"}},
 		}}},
-		Keys: []Key{{Name: "admin", Hash: hashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	store := &fakeStore{tabs: map[string][][]any{"SS/Orders": {
@@ -331,7 +326,7 @@ func TestListSortAndFilterOps(t *testing.T) {
 		{"o2", "mug", "9", "2", "y", "1"},
 		{"o3", "tea pot", "2", "3", "z", "2"},
 	}}}
-	h := (&API{cfg: cfg, svc: newService(cfg, store)}).routes()
+	h := New(cfg, service.New(cfg, store)).Routes()
 	ids := func(body string) string {
 		var rows []map[string]any
 		if err := json.Unmarshal([]byte(body), &rows); err != nil {
@@ -375,11 +370,11 @@ func TestListSortAndFilterOps(t *testing.T) {
 }
 
 func TestCORS(t *testing.T) {
-	cfg := &Config{CORSOrigins: []string{"https://app.example"}}
-	if err := cfg.validate(); err != nil {
+	cfg := &config.Config{CORSOrigins: []string{"https://app.example"}}
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	h := (&API{cfg: cfg, svc: newService(cfg, &fakeStore{})}).routes()
+	h := New(cfg, service.New(cfg, &fakeStore{})).Routes()
 	req := func(method, origin string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/v1/shop/Orders", nil)
 		r.Header.Set("Origin", origin)
@@ -399,14 +394,5 @@ func TestCORS(t *testing.T) {
 	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" ||
 		rec.Header().Get("Vary") != "Origin" {
 		t.Errorf("unlisted origin allowed: %d %v", rec.Code, rec.Header())
-	}
-}
-
-// Mixed columns must sort consistently: numbers numerically, then everything else as strings.
-func TestCompareMixed(t *testing.T) {
-	got := []string{"10", "1x", "", "2"}
-	slices.SortStableFunc(got, compare)
-	if want := []string{"2", "10", "", "1x"}; !slices.Equal(got, want) {
-		t.Fatalf("got %q, want %q", got, want)
 	}
 }

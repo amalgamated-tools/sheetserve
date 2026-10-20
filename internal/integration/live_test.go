@@ -1,12 +1,19 @@
-package main
+package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
+	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
 )
 
@@ -22,14 +29,18 @@ func TestLive(t *testing.T) {
 		t.Skip("set SHEETSERVE_LIVE_SHEET_ID and GOOGLE_APPLICATION_CREDENTIALS to run")
 	}
 	ctx := context.Background()
-	store, err := newGoogleStore(ctx)
+	gs, err := store.NewGoogleStore(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheetsSvc, err := sheets.NewService(ctx, option.WithScopes(sheets.SpreadsheetsScope))
 	if err != nil {
 		t.Fatal(err)
 	}
 	tab := fmt.Sprintf("it's sheetserve %d", time.Now().UnixNano())
 
 	// Set up the scratch tab with a header row.
-	resp, err := store.svc.Spreadsheets.BatchUpdate(sheetID, &sheets.BatchUpdateSpreadsheetRequest{
+	resp, err := sheetsSvc.Spreadsheets.BatchUpdate(sheetID, &sheets.BatchUpdateSpreadsheetRequest{
 		Requests: []*sheets.Request{{AddSheet: &sheets.AddSheetRequest{Properties: &sheets.SheetProperties{Title: tab}}}},
 	}).Context(ctx).Do()
 	if err != nil {
@@ -37,13 +48,13 @@ func TestLive(t *testing.T) {
 	}
 	gid := resp.Replies[0].AddSheet.Properties.SheetId
 	t.Cleanup(func() {
-		store.svc.Spreadsheets.BatchUpdate(sheetID, &sheets.BatchUpdateSpreadsheetRequest{
+		sheetsSvc.Spreadsheets.BatchUpdate(sheetID, &sheets.BatchUpdateSpreadsheetRequest{
 			Requests: []*sheets.Request{{DeleteSheet: &sheets.DeleteSheetRequest{SheetId: gid}}},
 		}).Context(context.Background()).Do()
 	})
 	setRow := func(rng string, row []any, input string) {
 		t.Helper()
-		_, err := store.svc.Spreadsheets.Values.Update(sheetID, quoteTab(tab)+"!"+rng, &sheets.ValueRange{Values: [][]any{row}}).
+		_, err := sheetsSvc.Spreadsheets.Values.Update(sheetID, quotedTab(tab)+"!"+rng, &sheets.ValueRange{Values: [][]any{row}}).
 			ValueInputOption(input).Context(ctx).Do()
 		if err != nil {
 			t.Fatalf("set %s: %v", rng, err)
@@ -51,13 +62,13 @@ func TestLive(t *testing.T) {
 	}
 	setRow("A1", []any{"id", "item", "qty", "total", "secret"}, "RAW")
 
-	cfg := &Config{Spreadsheets: map[string]Spreadsheet{"live": {ID: sheetID, Tabs: map[string]TabRule{
-		tab: {Ops: allOps, Hidden: []string{"secret"}},
+	cfg := &config.Config{Spreadsheets: map[string]config.Spreadsheet{"live": {ID: sheetID, Tabs: map[string]config.TabRule{
+		tab: {Ops: config.AllOps, Hidden: []string{"secret"}},
 	}}}}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	svc := newService(cfg, store)
+	svc := service.New(cfg, gs)
 
 	// Create: lands in columns A.., number stays a number, formula-looking input stays text.
 	a, err := svc.Create(ctx, "live", tab, map[string]any{"item": "=1+1", "qty": 2})
@@ -86,7 +97,7 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	formula, err := store.svc.Spreadsheets.Values.Get(sheetID, quoteTab(tab)+"!D2").ValueRenderOption("FORMULA").Context(ctx).Do()
+	formula, err := sheetsSvc.Spreadsheets.Values.Get(sheetID, quotedTab(tab)+"!D2").ValueRenderOption("FORMULA").Context(ctx).Do()
 	if err != nil || len(formula.Values) == 0 || formula.Values[0][0] != "=C2*10" {
 		t.Fatalf("formula in D2 not preserved: %v %v", formula, err)
 	}
@@ -99,11 +110,15 @@ func TestLive(t *testing.T) {
 	if err := svc.Delete(ctx, "live", tab, idA); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := svc.Get(ctx, "live", tab, idA); err != errNotFound {
+	var notFound *service.APIError
+	if _, err := svc.Get(ctx, "live", tab, idA); !errors.As(err, &notFound) || notFound.Status != http.StatusNotFound {
 		t.Fatalf("deleted row still readable: %v", err)
 	}
 	rows, err := svc.List(ctx, "live", tab, map[string]string{"item": "tea"}, "", 0, 0)
 	if err != nil || len(rows) != 1 || rows[0]["id"] != idB || rows[0]["qty"] != float64(7) {
 		t.Fatalf("list after delete: %v %v", rows, err)
 	}
+
 }
+
+func quotedTab(tab string) string { return "'" + strings.ReplaceAll(tab, "'", "''") + "'" }

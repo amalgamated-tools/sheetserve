@@ -23,8 +23,8 @@ and manage their own spreadsheets and keys in a web dashboard (stored in SQLite)
 
    ```sh
    cp config.example.yaml config.yaml
-   go run . keygen        # paste the hash into config.yaml and give the key to the client
-   GOOGLE_APPLICATION_CREDENTIALS=service-account.json go run .
+   go run ./cmd/server keygen        # paste the hash into config.yaml and give the key to the client
+   GOOGLE_APPLICATION_CREDENTIALS=service-account.json go run ./cmd/server
    ```
 
 ## Hosted mode (Google sign-in)
@@ -57,7 +57,7 @@ Environment variables:
 
 ```sh
 SHEETSERVE_CONFIG=/nonexistent SHEETSERVE_BASE_URL=http://localhost:8080 SHEETSERVE_SECRET=... \
-  GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_PICKER_API_KEY=... GOOGLE_PROJECT_NUMBER=... go run .
+  GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_PICKER_API_KEY=... GOOGLE_PROJECT_NUMBER=... go run ./cmd/server
 ```
 
 New tabs start with no ops enabled. Turn on the ops you want for each tab in the dashboard.

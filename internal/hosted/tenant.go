@@ -1,4 +1,4 @@
-package main
+package hosted
 
 import (
 	"context"
@@ -13,19 +13,24 @@ import (
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
+
+	"github.com/amalgamated-tools/sheetserve/internal/api"
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 // multiTenant serves hosted mode: users sign in with Google, and each user's API keys reach an
 // *API built from that user's rows in the database, calling Google with that user's credentials.
 type multiTenant struct {
-	global      *Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from db
+	global      *config.Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from db
 	db          *DB
 	oauth       *oauth2.Config
 	userinfoURL string
 	secure      bool   // set Secure on cookies (base URL is https)
 	pickerKey   string // browser API key for Google Picker
 	appID       string // Cloud project number, so picked files are granted to this app
-	newStore    func(userID int64) (Store, error)
+	newStore    func(userID int64) (store.Store, error)
 
 	mu      sync.Mutex
 	tenants map[int64]*tenant
@@ -34,19 +39,19 @@ type multiTenant struct {
 
 type tenant struct {
 	h   http.Handler
-	svc *Service
+	svc *service.Service
 }
 
-func newMultiTenant(global *Config, db *DB, oauth *oauth2.Config) *multiTenant {
+func newMultiTenant(global *config.Config, db *DB, oauth *oauth2.Config) *multiTenant {
 	m := &multiTenant{global: global, db: db, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
 		userinfoURL: "https://openidconnect.googleapis.com/v1/userinfo",
 		secure:      strings.HasPrefix(oauth.RedirectURL, "https://")}
-	m.newStore = func(userID int64) (Store, error) {
+	m.newStore = func(userID int64) (store.Store, error) {
 		ts, err := m.tokenSource(userID)
 		if err != nil {
 			return nil, err
 		}
-		return newGoogleStore(context.Background(), option.WithTokenSource(ts))
+		return store.NewGoogleStore(context.Background(), option.WithTokenSource(ts))
 	}
 	return m
 }
@@ -64,17 +69,17 @@ func (m *multiTenant) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /login", m.login)
 	mux.HandleFunc("GET /auth/callback", m.callback)
-	api := http.HandlerFunc(m.serveAPI)
-	mux.Handle("/v1/", api)
-	mux.Handle("/mcp", api)
-	mux.Handle("GET /openapi.json", api)
+	apiHandler := http.HandlerFunc(m.serveAPI)
+	mux.Handle("/v1/", apiHandler)
+	mux.Handle("/mcp", apiHandler)
+	mux.Handle("GET /openapi.json", apiHandler)
 	mux.Handle("/", http.NewCrossOriginProtection().Handler(m.web()))
-	return (&API{cfg: m.global}).cors(mux)
+	return api.CORS(m.global, mux)
 }
 
 // serveAPI hands the request to the API of the user who owns the bearer key.
 func (m *multiTenant) serveAPI(w http.ResponseWriter, r *http.Request) {
-	userID, ok, err := m.db.keyUser(r.Context(), hashKey(bearer(r)))
+	userID, ok, err := m.db.keyUser(r.Context(), config.HashKey(api.Bearer(r)))
 	var t *tenant
 	if err == nil && ok {
 		t, err = m.tenant(r.Context(), userID)
@@ -82,9 +87,9 @@ func (m *multiTenant) serveAPI(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil:
 		slog.Error("tenant", "user", userID, "err", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream error"})
+		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream error"})
 	case !ok:
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
+		api.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
 	default:
 		t.h.ServeHTTP(w, r)
 	}
@@ -97,7 +102,7 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	if t, ok := m.tenants[userID]; ok {
 		return t, nil
 	}
-	var cfg *Config
+	var cfg *config.Config
 	err := m.db.snapshot(ctx, func(tx *sql.Tx) (err error) {
 		cfg, err = userConfig(ctx, tx, userID, m.global)
 		return err
@@ -109,13 +114,13 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	if err != nil {
 		return nil, err
 	}
-	svc := newService(cfg, store)
+	svc := service.New(cfg, store)
 	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
 	if m.locks[userID] == nil {
 		m.locks[userID] = &sync.Map{}
 	}
-	svc.locks = m.locks[userID]
-	t := &tenant{(&API{cfg: cfg, svc: svc}).mux(), svc}
+	svc.UseLocks(m.locks[userID])
+	t := &tenant{api.New(cfg, svc).Mux(), svc}
 	m.tenants[userID] = t
 	return t, nil
 }

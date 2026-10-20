@@ -1,4 +1,4 @@
-package main
+package hosted
 
 import (
 	"cmp"
@@ -14,6 +14,10 @@ import (
 	"strings"
 
 	"golang.org/x/oauth2"
+
+	"github.com/amalgamated-tools/sheetserve/internal/api"
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 //go:embed web.html
@@ -87,12 +91,12 @@ func (m *multiTenant) token(w http.ResponseWriter, r *http.Request, u user) {
 	if err == nil {
 		var t *oauth2.Token
 		if t, err = ts.Token(); err == nil {
-			writeJSON(w, http.StatusOK, map[string]string{"token": t.AccessToken})
+			api.WriteJSON(w, http.StatusOK, map[string]string{"token": t.AccessToken})
 			return
 		}
 	}
 	slog.Error("picker token", "user", u.id, "err", err)
-	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not get a Google token; sign in again"})
+	api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "could not get a Google token; sign in again"})
 }
 
 func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
@@ -104,7 +108,7 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	t, err := m.tenant(r.Context(), u.id)
 	var tabs []string
 	if err == nil {
-		tabs, err = t.svc.store.Tabs(r.Context(), gid)
+		tabs, err = t.svc.Tabs(r.Context(), gid)
 	}
 	if err != nil {
 		slog.Error("read tabs", "user", u.id, "err", err)
@@ -149,7 +153,7 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 			return err
 		}
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
-			return cmp.Or(err, badRequest("unknown tab"))
+			return cmp.Or(err, service.BadRequest("unknown tab"))
 		}
 		return nil
 	})
@@ -157,13 +161,13 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 
 func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) {
 	r.ParseForm()
-	key := newKey()
+	key := config.NewKey()
 	err := m.db.update(r.Context(), u.id, m.global, func(tx *sql.Tx) error {
 		if len(r.Form["tabs"]) == 0 {
-			return badRequest("pick at least one tab for the key")
+			return service.BadRequest("pick at least one tab for the key")
 		}
 		_, err := tx.Exec(`INSERT INTO api_keys (hash, user_id, name, tabs, ops) VALUES (?, ?, ?, ?, ?)`,
-			hashKey(key), u.id, strings.TrimSpace(r.FormValue("name")), jsonList(r.Form["tabs"]), jsonList(r.Form["ops"]))
+			config.HashKey(key), u.id, strings.TrimSpace(r.FormValue("name")), jsonList(r.Form["tabs"]), jsonList(r.Form["ops"]))
 		return err
 	})
 	if err != nil {
@@ -192,7 +196,7 @@ func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, fn 
 }
 
 func userMessage(err error) string {
-	var ae *apiError
+	var ae *service.APIError
 	switch {
 	case errors.As(err, &ae):
 		return ae.Msg
@@ -209,7 +213,7 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
 	}
-	p.Email, p.PickerKey, p.AppID, p.AllOps = u.email, m.pickerKey, m.appID, allOps
+	p.Email, p.PickerKey, p.AppID, p.AllOps = u.email, m.pickerKey, m.appID, config.AllOps
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := webTmpl.ExecuteTemplate(w, "app", p); err != nil {

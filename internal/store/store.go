@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"context"
@@ -28,7 +28,7 @@ type googleStore struct {
 
 // newGoogleStore authenticates with Application Default Credentials
 // (GOOGLE_APPLICATION_CREDENTIALS pointing at a service account JSON file) unless opts say otherwise.
-func newGoogleStore(ctx context.Context, opts ...option.ClientOption) (*googleStore, error) {
+func NewGoogleStore(ctx context.Context, opts ...option.ClientOption) (*googleStore, error) {
 	svc, err := sheets.NewService(ctx, append([]option.ClientOption{option.WithScopes(sheets.SpreadsheetsScope)}, opts...)...)
 	if err != nil {
 		return nil, err

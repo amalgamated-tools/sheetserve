@@ -1,4 +1,4 @@
-package main
+package hosted
 
 import (
 	"context"
@@ -9,25 +9,63 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"golang.org/x/oauth2"
 )
 
-func newTestHosted(t *testing.T, store Store) (*multiTenant, *httptest.Server) {
+type fakeStore struct{ tabs map[string][][]any }
+
+func (f *fakeStore) Read(_ context.Context, id, tab string) ([][]any, error) {
+	return f.tabs[id+"/"+tab], nil
+}
+
+func (f *fakeStore) Append(_ context.Context, id, tab string, row []any) error {
+	f.tabs[id+"/"+tab] = append(f.tabs[id+"/"+tab], row)
+	return nil
+}
+
+func (f *fakeStore) SetCells(_ context.Context, id, tab string, row int, cells map[int]any) error {
+	for c, v := range cells {
+		f.tabs[id+"/"+tab][row-1][c] = v
+	}
+	return nil
+}
+
+func (f *fakeStore) DeleteRow(_ context.Context, id, tab string, row int) error {
+	key := id + "/" + tab
+	f.tabs[key] = slices.Delete(f.tabs[key], row-1, row)
+	return nil
+}
+
+func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
+	var out []string
+	for key := range f.tabs {
+		if tab, ok := strings.CutPrefix(key, id+"/"); ok {
+			out = append(out, tab)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptest.Server) {
 	t.Helper()
 	db, err := openDB(t.TempDir()+"/test.db", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	global := &Config{}
-	if err := global.validate(); err != nil {
+	global := &config.Config{}
+	if err := global.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	m := newMultiTenant(global, db, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"})
-	m.newStore = func(int64) (Store, error) { return store, nil }
+	m.newStore = func(int64) (store.Store, error) { return sheetStore, nil }
 	srv := httptest.NewServer(m.routes())
 	t.Cleanup(srv.Close)
 	return m, srv
@@ -234,7 +272,7 @@ func TestTenantRebuildKeepsLocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if old == fresh || old.svc.locks != fresh.svc.locks {
+	if old == fresh || !old.svc.SharesLocks(fresh.svc) {
 		t.Fatal("rebuilt tenant has its own tab locks")
 	}
 }

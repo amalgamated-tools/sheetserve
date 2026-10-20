@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -18,10 +20,10 @@ import (
 // one set of tools per tab the key can reach, with column names from the header row.
 func (a *API) mcpHandler() http.Handler {
 	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return a.mcpServer(r.Context(), a.cfg.keyFor(bearer(r)))
+		return a.mcpServer(r.Context(), a.cfg.KeyFor(bearer(r)))
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.keyFor(bearer(r)) == nil {
+		if a.cfg.KeyFor(bearer(r)) == nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
 			return
 		}
@@ -31,8 +33,8 @@ func (a *API) mcpHandler() http.Handler {
 
 // ponytail: the server is rebuilt per request (stateless mode), reading each tab's header from
 // the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
-func (a *API) mcpServer(ctx context.Context, key *Key) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: version}, nil)
+func (a *API) mcpServer(ctx context.Context, key *config.Key) *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: Version}, nil)
 	a.eachTab(ctx, key, func(name, sheet, tab string, ops, cols []string) {
 		a.addTabTools(srv, key, name, sheet, tab, ops, cols)
 	})
@@ -42,11 +44,11 @@ func (a *API) mcpServer(ctx context.Context, key *Key) *mcp.Server {
 // eachTab calls fn, in sorted order, for every tab key can reach, with a name unique among
 // those tabs, the ops it may perform and its distinct visible columns (including id).
 // Tabs whose header can't be read are skipped.
-func (a *API) eachTab(ctx context.Context, key *Key, fn func(name, sheet, tab string, ops, cols []string)) {
+func (a *API) eachTab(ctx context.Context, key *config.Key, fn func(name, sheet, tab string, ops, cols []string)) {
 	used := map[string]bool{}
 	for _, sheet := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets)) {
 		for _, tab := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets[sheet].Tabs)) {
-			ops := slices.DeleteFunc(slices.Clone(allOps), func(op string) bool { return !a.cfg.can(key, sheet, tab, op) })
+			ops := slices.DeleteFunc(slices.Clone(config.AllOps), func(op string) bool { return !a.cfg.Can(key, sheet, tab, op) })
 			if len(ops) == 0 {
 				continue
 			}
@@ -58,13 +60,13 @@ func (a *API) eachTab(ctx context.Context, key *Key, fn func(name, sheet, tab st
 				name = base + "_" + strconv.Itoa(i)
 			}
 			used[name] = true
-			snap, err := a.svc.load(ctx, sheet, tab, false)
+			columns, err := a.svc.VisibleColumns(ctx, sheet, tab)
 			if err != nil {
 				slog.WarnContext(ctx, "skipping tab", "sheet", sheet, "tab", tab, "err", err)
 				continue
 			}
 			var cols []string
-			for _, c := range a.svc.visibleColumns(snap, sheet, tab) {
+			for _, c := range columns {
 				if !slices.Contains(cols, c) {
 					cols = append(cols, c)
 				}
@@ -78,7 +80,7 @@ type idArgs struct {
 	ID string `json:"id"`
 }
 
-func (a *API) addTabTools(srv *mcp.Server, key *Key, name, sheet, tab string, ops, cols []string) {
+func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab string, ops, cols []string) {
 	where := sheet + "/" + tab
 	columns := map[string]any{}
 	for _, c := range cols {
@@ -98,7 +100,7 @@ func (a *API) addTabTools(srv *mcp.Server, key *Key, name, sheet, tab string, op
 				filter["properties"].(map[string]any)[c] = map[string]any{"type": "string"}
 			}
 			addTool(srv, key, name+"_list", "List rows in "+where+". A filter key \"col\" matches exactly; \"col[op]\" uses op, one of "+
-				strings.Join(filterOps, ", ")+". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case. "+
+				strings.Join(service.FilterOperators(), ", ")+". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case. "+
 				"sort is a column name, prefixed with - for descending.",
 				object(map[string]any{"filter": filter, "sort": map[string]any{"type": "string"},
 					"limit": map[string]any{"type": "integer"}, "offset": map[string]any{"type": "integer"}}),
@@ -143,12 +145,12 @@ func object(props map[string]any, required ...string) map[string]any {
 	return s
 }
 
-func addTool[In any](srv *mcp.Server, key *Key, name, desc string, schema map[string]any, fn func(context.Context, In) (any, error)) {
+func addTool[In any](srv *mcp.Server, key *config.Key, name, desc string, schema map[string]any, fn func(context.Context, In) (any, error)) {
 	srv.AddTool(&mcp.Tool{Name: name, Description: desc, InputSchema: schema},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var in In
 			var out any
-			err := error(badRequest("invalid arguments"))
+			err := error(service.BadRequest("invalid arguments"))
 			if args := req.Params.Arguments; len(args) == 0 || json.Unmarshal(args, &in) == nil {
 				out, err = fn(ctx, in)
 			}
