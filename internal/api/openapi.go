@@ -1,4 +1,4 @@
-package sheetserve
+package api
 
 import (
 	"context"
@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 type obj = map[string]any
@@ -15,7 +18,7 @@ type obj = map[string]any
 // openAPIHandler serves an OpenAPI 3.1 spec covering only what the caller's key can reach.
 func (a *API) openAPIHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	key := a.cfg.keyFor(bearer(r))
+	key := a.cfg.KeyFor(bearer(r))
 	status, keyName, reason := http.StatusOK, "", ""
 	if key == nil {
 		status, reason = http.StatusUnauthorized, "missing or invalid API key"
@@ -28,7 +31,7 @@ func (a *API) openAPIHandler(w http.ResponseWriter, r *http.Request) {
 		"status", status, "reason", reason, "duration_ms", time.Since(start).Milliseconds())
 }
 
-func (a *API) openAPI(ctx context.Context, key *Key) obj {
+func (a *API) openAPI(ctx context.Context, key *config.Key) obj {
 	schemas := obj{"Error": object(obj{"error": obj{"type": "string"}}, "error")}
 	paths := obj{}
 	a.eachTab(ctx, key, func(name, sheet, tab string, ops, cols []string) {
@@ -61,7 +64,7 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 						continue
 					}
 					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": obj{"type": "string"}})
-					for _, filterOp := range filterOps {
+					for _, filterOp := range service.FilterOperators() {
 						if slices.Contains(cols, c+"["+filterOp+"]") { // the exact column wins; see Service.List
 							continue
 						}
@@ -71,7 +74,7 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 				}
 				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
 				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
-					strings.Join(filterOps, ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case."
+					strings.Join(service.FilterOperators(), ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case."
 				coll["get"] = list
 				item["get"] = operation(name+"_get", "Get one row by id", idParam, nil, "200", ref)
 			case "create":
@@ -92,7 +95,7 @@ func (a *API) openAPI(ctx context.Context, key *Key) obj {
 	})
 	return obj{
 		"openapi":    "3.1.0",
-		"info":       obj{"title": "sheetserve", "version": version},
+		"info":       obj{"title": "sheetserve", "version": Version},
 		"servers":    []any{obj{"url": "/"}},
 		"security":   []any{obj{"bearerAuth": []any{}}},
 		"paths":      paths,

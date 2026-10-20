@@ -1,4 +1,4 @@
-package sheetserve
+package config
 
 import (
 	"cmp"
@@ -16,7 +16,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-var allOps = []string{"read", "create", "update", "delete"}
+var AllOps = []string{"read", "create", "update", "delete"}
 
 type Config struct {
 	Listen       string                 `yaml:"listen"`
@@ -46,11 +46,11 @@ type Key struct {
 }
 
 // loadConfig reads path; a missing file is an empty config, which runs hosted mode.
-func loadConfig(path string) (*Config, error) {
+func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		var c Config
-		return &c, c.validate()
+		return &c, c.Validate()
 	}
 	if err != nil {
 		return nil, err
@@ -59,10 +59,10 @@ func loadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	return &c, c.validate()
+	return &c, c.Validate()
 }
 
-func (c *Config) validate() error {
+func (c *Config) Validate() error {
 	c.Listen = cmp.Or(c.Listen, ":"+cmp.Or(os.Getenv("PORT"), "8080"))
 	for name, ss := range c.Spreadsheets {
 		if ss.ID == "" {
@@ -109,37 +109,37 @@ func (c *Config) validate() error {
 
 func checkOps(ops []string) error {
 	for _, op := range ops {
-		if !slices.Contains(allOps, op) {
-			return fmt.Errorf("unknown op %q (want one of %v)", op, allOps)
+		if !slices.Contains(AllOps, op) {
+			return fmt.Errorf("unknown op %q (want one of %v)", op, AllOps)
 		}
 	}
 	return nil
 }
 
 // newKey returns a fresh API key; only its hashKey is stored.
-func newKey() string { return "sk_" + rand.Text() }
+func NewKey() string { return "sk_" + rand.Text() }
 
-func hashKey(token string) string {
+func HashKey(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // keyFor returns the key matching token, or nil.
-func (c *Config) keyFor(token string) *Key {
+func (c *Config) KeyFor(token string) *Key {
 	if token == "" {
 		return nil
 	}
-	return c.byHash[hashKey(token)]
+	return c.byHash[HashKey(token)]
 }
 
-func (c *Config) rule(sheet, tab string) (TabRule, bool) {
+func (c *Config) Rule(sheet, tab string) (TabRule, bool) {
 	r, ok := c.Spreadsheets[sheet].Tabs[tab]
 	return r, ok
 }
 
 // can reports whether k may perform op on sheet/tab, combining the tab's ops with the key's scope.
-func (c *Config) can(k *Key, sheet, tab, op string) bool {
-	rule, ok := c.rule(sheet, tab)
+func (c *Config) Can(k *Key, sheet, tab, op string) bool {
+	rule, ok := c.Rule(sheet, tab)
 	if !ok || !slices.Contains(rule.Ops, op) || (len(k.Ops) > 0 && !slices.Contains(k.Ops, op)) {
 		return false
 	}

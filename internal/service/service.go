@@ -1,4 +1,4 @@
-package sheetserve
+package service
 
 import (
 	"cmp"
@@ -12,25 +12,28 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
-type apiError struct {
+type APIError struct {
 	Status int
 	Msg    string
 }
 
-func (e *apiError) Error() string { return e.Msg }
+func (e *APIError) Error() string { return e.Msg }
 
-func badRequest(format string, a ...any) error {
-	return &apiError{http.StatusBadRequest, fmt.Sprintf(format, a...)}
+func BadRequest(format string, a ...any) error {
+	return &APIError{http.StatusBadRequest, fmt.Sprintf(format, a...)}
 }
 
-var errNotFound = &apiError{http.StatusNotFound, "row not found"}
+var errNotFound = &APIError{http.StatusNotFound, "row not found"}
 
 // Service maps tabs to rows of objects keyed by the header row. Every tab needs an "id" column.
 type Service struct {
-	cfg   *Config
-	store Store
+	cfg   *config.Config
+	store store.Store
 
 	mu    sync.Mutex
 	cache map[string]snapshot
@@ -43,8 +46,16 @@ type snapshot struct {
 	at     time.Time
 }
 
-func newService(cfg *Config, store Store) *Service {
+func New(cfg *config.Config, store store.Store) *Service {
 	return &Service{cfg: cfg, store: store, cache: map[string]snapshot{}, locks: &sync.Map{}}
+}
+
+func (s *Service) UseLocks(locks *sync.Map) { s.locks = locks }
+
+func (s *Service) SharesLocks(other *Service) bool { return s.locks == other.locks }
+
+func (s *Service) Tabs(ctx context.Context, spreadsheetID string) ([]string, error) {
+	return s.store.Tabs(ctx, spreadsheetID)
 }
 
 // ponytail: in-process cache and locks; a second replica needs Redis + a distributed lock.
@@ -105,6 +116,14 @@ func (s *Service) visibleColumns(snap snapshot, sheet, tab string) []string {
 	})
 }
 
+func (s *Service) VisibleColumns(ctx context.Context, sheet, tab string) ([]string, error) {
+	snap, err := s.load(ctx, sheet, tab, false)
+	if err != nil {
+		return nil, err
+	}
+	return s.visibleColumns(snap, sheet, tab), nil
+}
+
 func (s *Service) toObject(snap snapshot, row []any, sheet, tab string) map[string]any {
 	hidden := s.hidden(sheet, tab)
 	m := map[string]any{}
@@ -131,6 +150,8 @@ func findID(snap snapshot, id string) int {
 // filterOps are the operators a filter key can carry as a suffix, as in "qty[gte]". No suffix means eq.
 var filterOps = []string{"eq", "ne", "gt", "gte", "lt", "lte", "contains"}
 
+func FilterOperators() []string { return slices.Clone(filterOps) }
+
 type cond struct {
 	col int
 	op  string
@@ -142,10 +163,10 @@ type cond struct {
 // suffix, so columns named "-x" or "x[ne]" stay reachable.
 func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, sort string, limit, offset int) ([]map[string]any, error) {
 	if limit < 0 {
-		return nil, badRequest("invalid limit")
+		return nil, BadRequest("invalid limit")
 	}
 	if offset < 0 {
-		return nil, badRequest("invalid offset")
+		return nil, BadRequest("invalid offset")
 	}
 	snap, err := s.load(ctx, sheet, tab, false)
 	if err != nil {
@@ -155,7 +176,7 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 	// Filtering or sorting on a hidden column would leak its values.
 	column := func(name string) (int, error) {
 		if !slices.Contains(visible, name) {
-			return 0, badRequest("unknown column %q", name)
+			return 0, BadRequest("unknown column %q", name)
 		}
 		return slices.Index(snap.header, name), nil
 	}
@@ -165,7 +186,7 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 		if j := strings.LastIndex(k, "["); j > 0 && strings.HasSuffix(k, "]") && !slices.Contains(visible, k) {
 			name, op = k[:j], k[j+1:len(k)-1]
 			if !slices.Contains(filterOps, op) {
-				return nil, badRequest("unknown operator %q (want one of %v)", op, filterOps)
+				return nil, BadRequest("unknown operator %q (want one of %v)", op, filterOps)
 			}
 		}
 		i, err := column(name)
@@ -269,10 +290,10 @@ func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[strin
 	visible := s.visibleColumns(snap, sheet, tab)
 	for _, f := range slices.Sorted(maps.Keys(fields)) {
 		if f == "id" {
-			return badRequest("id is assigned by the server")
+			return BadRequest("id is assigned by the server")
 		}
 		if !slices.Contains(visible, f) {
-			return badRequest("unknown column %q", f)
+			return BadRequest("unknown column %q", f)
 		}
 	}
 	return nil
@@ -302,7 +323,7 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 // sheet during that window can shift the target row. Fine for API-owned tabs.
 func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[string]any) (map[string]any, error) {
 	if len(fields) == 0 {
-		return nil, badRequest("no fields to update")
+		return nil, BadRequest("no fields to update")
 	}
 	defer s.lockTab(sheet, tab)()
 	snap, err := s.load(ctx, sheet, tab, true)

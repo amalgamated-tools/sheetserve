@@ -1,4 +1,4 @@
-package sheetserve
+package api
 
 import (
 	"encoding/json"
@@ -9,16 +9,31 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
+const Version = "0.1.0"
+
 type API struct {
-	cfg *Config
-	svc *Service
+	cfg *config.Config
+	svc *service.Service
 }
 
 type handlerFunc func(r *http.Request, sheet, tab string) (int, any, error)
 
-func (a *API) routes() http.Handler { return a.cors(a.mux()) }
+func New(cfg *config.Config, svc *service.Service) *API { return &API{cfg: cfg, svc: svc} }
+
+func (a *API) Routes() http.Handler { return CORS(a.cfg, a.mux()) }
+
+func (a *API) Mux() http.Handler { return a.mux() }
+
+func CORS(cfg *config.Config, next http.Handler) http.Handler { return (&API{cfg: cfg}).cors(next) }
+
+func Bearer(r *http.Request) string { return bearer(r) }
+
+func WriteJSON(w http.ResponseWriter, status int, body any) { writeJSON(w, status, body) }
 
 func (a *API) mux() *http.ServeMux {
 	mux := http.NewServeMux()
@@ -63,16 +78,16 @@ func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sheet, tab := r.PathValue("sheet"), r.PathValue("tab")
-		key := a.cfg.keyFor(bearer(r))
+		key := a.cfg.KeyFor(bearer(r))
 		status, body, err := func() (int, any, error) {
 			if key == nil {
-				return 0, nil, &apiError{http.StatusUnauthorized, "missing or invalid API key"}
+				return 0, nil, &service.APIError{Status: http.StatusUnauthorized, Msg: "missing or invalid API key"}
 			}
-			if _, ok := a.cfg.rule(sheet, tab); !ok {
-				return 0, nil, &apiError{http.StatusNotFound, "unknown tab"}
+			if _, ok := a.cfg.Rule(sheet, tab); !ok {
+				return 0, nil, &service.APIError{Status: http.StatusNotFound, Msg: "unknown tab"}
 			}
-			if !a.cfg.can(key, sheet, tab, op) {
-				return 0, nil, &apiError{http.StatusForbidden, op + " not allowed on " + sheet + "/" + tab}
+			if !a.cfg.Can(key, sheet, tab, op) {
+				return 0, nil, &service.APIError{Status: http.StatusForbidden, Msg: op + " not allowed on " + sheet + "/" + tab}
 			}
 			return h(r, sheet, tab)
 		}()
@@ -92,7 +107,7 @@ func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 
 // errorResponse hides upstream (Google) error details from callers; they are only logged.
 func errorResponse(err error) (status int, body any, reason string) {
-	var ae *apiError
+	var ae *service.APIError
 	if errors.As(err, &ae) {
 		return ae.Status, map[string]string{"error": ae.Msg}, ae.Msg
 	}
@@ -116,7 +131,7 @@ func (a *API) list(r *http.Request, sheet, tab string) (int, any, error) {
 			filter[k] = q.Get(k)
 		}
 		if err != nil || limit < 0 || offset < 0 {
-			return 0, nil, badRequest("invalid %s", k)
+			return 0, nil, service.BadRequest("invalid %s", k)
 		}
 	}
 	rows, err := a.svc.List(r.Context(), sheet, tab, filter, sort, limit, offset)
@@ -156,7 +171,7 @@ func decodeBody(r *http.Request) (map[string]any, error) {
 	dec.UseNumber() // keep large integers exact
 	var fields map[string]any
 	if err := dec.Decode(&fields); err != nil {
-		return nil, badRequest("body must be a JSON object")
+		return nil, service.BadRequest("body must be a JSON object")
 	}
 	return fields, nil
 }

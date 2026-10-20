@@ -1,7 +1,7 @@
 package main
 
-import "github.com/amalgamated-tools/sheetserve/internal/sheetserve"
+import "github.com/amalgamated-tools/sheetserve/internal/server"
 
 func main() {
-	sheetserve.Main()
+	server.Main()
 }
