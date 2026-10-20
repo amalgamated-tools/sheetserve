@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	_ "embed"
@@ -103,7 +104,7 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	t, err := m.tenant(r.Context(), u.id)
 	var tabs []string
 	if err == nil {
-		tabs, err = t.store.Tabs(r.Context(), gid)
+		tabs, err = t.svc.store.Tabs(r.Context(), gid)
 	}
 	if err != nil {
 		slog.Error("read tabs", "user", u.id, "err", err)
@@ -144,10 +145,13 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 	m.change(w, r, u, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE tabs SET ops = ?, hidden = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
 			jsonList(r.Form["ops"]), jsonList(hidden), u.id, r.FormValue("sheet"), r.FormValue("tab"))
-		if n, _ := res.RowsAffected(); err == nil && n == 0 {
-			return badRequest("unknown tab")
+		if err != nil {
+			return err
 		}
-		return err
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return cmp.Or(err, badRequest("unknown tab"))
+		}
+		return nil
 	})
 }
 
@@ -200,7 +204,7 @@ func userMessage(err error) string {
 }
 
 func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p page, status int) {
-	if err := m.load(r.Context(), u.id, &p); err != nil {
+	if err := m.db.snapshot(r.Context(), func(tx *sql.Tx) error { return m.load(r.Context(), tx, u.id, &p) }); err != nil {
 		slog.Error("dashboard", "user", u.id, "err", err)
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
@@ -213,10 +217,11 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 	}
 }
 
-// load fills p with userID's spreadsheets, tabs and keys, in display order.
-func (m *multiTenant) load(ctx context.Context, userID int64, p *page) error {
+// load fills p with userID's spreadsheets, tabs and keys, in display order. q must be one snapshot,
+// or a sheet added between the reads would leave its tabs without a sheet.
+func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page) error {
 	p.TabSpecs = []string{"*"}
-	err := scan(ctx, m.db, `SELECT name, title FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+	err := scan(ctx, q, `SELECT name, title FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 		var s sheetView
 		if err := rows.Scan(&s.Name, &s.Title); err != nil {
 			return err
@@ -228,12 +233,12 @@ func (m *multiTenant) load(ctx context.Context, userID int64, p *page) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := userConfig(ctx, m.db, userID, m.global)
+	cfg, err := userConfig(ctx, q, userID, m.global)
 	if err != nil {
 		return err
 	}
 	// rowid keeps tabs in the order Google listed them.
-	err = scan(ctx, m.db, `SELECT sheet, tab FROM tabs WHERE user_id = ? ORDER BY rowid`, userID, func(rows *sql.Rows) error {
+	err = scan(ctx, q, `SELECT sheet, tab FROM tabs WHERE user_id = ? ORDER BY rowid`, userID, func(rows *sql.Rows) error {
 		var sheet, tab string
 		if err := rows.Scan(&sheet, &tab); err != nil {
 			return err

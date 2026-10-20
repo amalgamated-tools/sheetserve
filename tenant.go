@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -28,15 +29,16 @@ type multiTenant struct {
 
 	mu      sync.Mutex
 	tenants map[int64]*tenant
+	locks   map[int64]*sync.Map // per-user tab write locks; outlive tenant rebuilds
 }
 
 type tenant struct {
-	h     http.Handler
-	store Store
+	h   http.Handler
+	svc *Service
 }
 
 func newMultiTenant(global *Config, db *DB, oauth *oauth2.Config) *multiTenant {
-	m := &multiTenant{global: global, db: db, oauth: oauth, tenants: map[int64]*tenant{},
+	m := &multiTenant{global: global, db: db, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
 		userinfoURL: "https://openidconnect.googleapis.com/v1/userinfo",
 		secure:      strings.HasPrefix(oauth.RedirectURL, "https://")}
 	m.newStore = func(userID int64) (Store, error) {
@@ -95,7 +97,11 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	if t, ok := m.tenants[userID]; ok {
 		return t, nil
 	}
-	cfg, err := userConfig(ctx, m.db, userID, m.global)
+	var cfg *Config
+	err := m.db.snapshot(ctx, func(tx *sql.Tx) (err error) {
+		cfg, err = userConfig(ctx, tx, userID, m.global)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +109,13 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	if err != nil {
 		return nil, err
 	}
-	t := &tenant{(&API{cfg: cfg, svc: newService(cfg, store)}).mux(), store}
+	svc := newService(cfg, store)
+	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
+	if m.locks[userID] == nil {
+		m.locks[userID] = &sync.Map{}
+	}
+	svc.locks = m.locks[userID]
+	t := &tenant{(&API{cfg: cfg, svc: svc}).mux(), svc}
 	m.tenants[userID] = t
 	return t, nil
 }

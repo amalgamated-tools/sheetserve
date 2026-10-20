@@ -217,3 +217,24 @@ func must[T any](v T, err error) T {
 	}
 	return v
 }
+
+// A rebuilt tenant shares tab write locks with the one it replaced, which may still be serving requests.
+func TestTenantRebuildKeepsLocks(t *testing.T) {
+	m, _ := newTestHosted(t, &fakeStore{})
+	id, err := m.db.upsertUser(context.Background(), "dave", "dave@example.com", "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := m.tenant(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.invalidate(id)
+	fresh, err := m.tenant(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old == fresh || old.svc.locks != fresh.svc.locks {
+		t.Fatal("rebuilt tenant has its own tab locks")
+	}
+}

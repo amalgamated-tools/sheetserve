@@ -226,6 +226,16 @@ func scan(ctx context.Context, q querier, query string, userID int64, fn func(*s
 	return rows.Err()
 }
 
+// snapshot runs fn in a read-only transaction, so all its reads see one consistent state.
+func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	return fn(tx)
+}
+
 // update runs fn in a transaction and commits only if userID's resulting config still validates,
 // so validate() checks every dashboard change.
 func (d *DB) update(ctx context.Context, userID int64, global *Config, fn func(tx *sql.Tx) error) error {
