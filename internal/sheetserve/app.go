@@ -1,5 +1,5 @@
 // Command sheetserve serves Google Sheets tabs as a REST API and an MCP endpoint.
-package main
+package sheetserve
 
 import (
 	"cmp"
@@ -20,7 +20,7 @@ import (
 
 const version = "0.1.0"
 
-func main() {
+func Main() {
 	if len(os.Args) > 1 && os.Args[1] == "keygen" {
 		key := newKey()
 		fmt.Printf("key:  %s   (give this to the client; it is not stored)\nhash: %s   (put this in config.yaml)\n", key, hashKey(key))
