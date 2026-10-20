@@ -17,6 +17,7 @@ type Store interface {
 	Append(ctx context.Context, spreadsheetID, tab string, row []any) error
 	SetCells(ctx context.Context, spreadsheetID, tab string, row int, cells map[int]any) error
 	DeleteRow(ctx context.Context, spreadsheetID, tab string, row int) error
+	Tabs(ctx context.Context, spreadsheetID string) ([]string, error)
 }
 
 type googleStore struct {
@@ -26,9 +27,9 @@ type googleStore struct {
 }
 
 // newGoogleStore authenticates with Application Default Credentials
-// (GOOGLE_APPLICATION_CREDENTIALS pointing at a service account JSON file).
-func newGoogleStore(ctx context.Context) (*googleStore, error) {
-	svc, err := sheets.NewService(ctx, option.WithScopes(sheets.SpreadsheetsScope))
+// (GOOGLE_APPLICATION_CREDENTIALS pointing at a service account JSON file) unless opts say otherwise.
+func newGoogleStore(ctx context.Context, opts ...option.ClientOption) (*googleStore, error) {
+	svc, err := sheets.NewService(ctx, append([]option.ClientOption{option.WithScopes(sheets.SpreadsheetsScope)}, opts...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +81,19 @@ func (g *googleStore) DeleteRow(ctx context.Context, id, tab string, row int) er
 		}}},
 	}).Context(ctx).Do()
 	return err
+}
+
+// Tabs returns the spreadsheet's tab titles in sheet order.
+func (g *googleStore) Tabs(ctx context.Context, id string) ([]string, error) {
+	ss, err := g.svc.Spreadsheets.Get(id).Fields("sheets.properties.title").Context(ctx).Do()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, sh := range ss.Sheets {
+		out = append(out, sh.Properties.Title)
+	}
+	return out, nil
 }
 
 func (g *googleStore) gid(ctx context.Context, id, tab string) (int64, error) {

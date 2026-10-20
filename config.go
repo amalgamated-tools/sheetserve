@@ -2,9 +2,12 @@ package main
 
 import (
 	"cmp"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -42,8 +45,13 @@ type Key struct {
 	Ops  []string `yaml:"ops"`  // optional; narrows the tab's ops
 }
 
+// loadConfig reads path; a missing file is an empty config, which runs hosted mode.
 func loadConfig(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		var c Config
+		return &c, c.validate()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +67,9 @@ func (c *Config) validate() error {
 	for name, ss := range c.Spreadsheets {
 		if ss.ID == "" {
 			return fmt.Errorf("spreadsheet %q: missing id", name)
+		}
+		if strings.Contains(name, "/") {
+			return fmt.Errorf("spreadsheet %q: name must not contain /", name)
 		}
 		for tab, rule := range ss.Tabs {
 			if err := checkOps(rule.Ops); err != nil {
@@ -104,6 +115,9 @@ func checkOps(ops []string) error {
 	}
 	return nil
 }
+
+// newKey returns a fresh API key; only its hashKey is stored.
+func newKey() string { return "sk_" + rand.Text() }
 
 func hashKey(token string) string {
 	sum := sha256.Sum256([]byte(token))

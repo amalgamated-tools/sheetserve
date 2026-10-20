@@ -1,7 +1,8 @@
 # sheetserve
 
-Self-hosted REST API and MCP server for Google Sheets. It is one binary with no database.
-You configure it with one YAML file.
+Self-hosted REST API and MCP server for Google Sheets. It is one binary.
+You configure it with one YAML file, or run it in hosted mode, where people sign in with Google
+and manage their own spreadsheets and keys in a web dashboard (stored in SQLite).
 
 - Each tab gets `GET / POST / PATCH / DELETE` routes.
 - You set the allowed operations for each tab, and you can hide columns.
@@ -25,6 +26,41 @@ You configure it with one YAML file.
    go run . keygen        # paste the hash into config.yaml and give the key to the client
    GOOGLE_APPLICATION_CREDENTIALS=service-account.json go run .
    ```
+
+## Hosted mode (Google sign-in)
+
+If the config file is missing or lists no spreadsheets, sheetserve runs in hosted mode.
+Anyone with a Google account can sign in, pick spreadsheets from their Drive, choose the ops and hidden
+columns for each tab, and create API keys. A key acts through the Google account of the user who made it.
+The `listen`, `cache_ttl` and `cors_origins` settings still come from the config file, if there is one.
+
+Google Cloud setup:
+
+1. Enable the Google Sheets API and the Google Picker API.
+2. Configure the OAuth consent screen with the scopes `openid`, `email` and `.../auth/drive.file`.
+   `drive.file` lets the app open only the spreadsheets a user picks, so it does not need restricted-scope verification.
+   While the app is in "Testing" status, Google expires refresh tokens after 7 days and only test users can sign in.
+   Publish the app for real use.
+3. Create an OAuth client of type "Web application" with the redirect URI `<base URL>/auth/callback`.
+4. Create an API key for the Picker, restricted to the Picker API and your site.
+
+Environment variables:
+
+| Variable | Value |
+|---|---|
+| `SHEETSERVE_BASE_URL` | Public URL, such as `https://sheets.example.com`. On Render it defaults to `RENDER_EXTERNAL_URL`. |
+| `SHEETSERVE_SECRET` | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored refresh tokens. Keep it stable. |
+| `SHEETSERVE_DB` | SQLite file path. Defaults to `sheetserve.db`. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | From the OAuth client. |
+| `GOOGLE_PICKER_API_KEY` | The Picker API key. |
+| `GOOGLE_PROJECT_NUMBER` | The Cloud project number, so picked files are granted to the app. |
+
+```sh
+SHEETSERVE_CONFIG=/nonexistent SHEETSERVE_BASE_URL=http://localhost:8080 SHEETSERVE_SECRET=... \
+  GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_PICKER_API_KEY=... GOOGLE_PROJECT_NUMBER=... go run .
+```
+
+New tabs start with no ops enabled. Turn on the ops you want for each tab in the dashboard.
 
 ## API
 
@@ -71,10 +107,13 @@ Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and 
 ## Deploy
 
 `docker build -t sheetserve .`, or use `render.yaml` on Render.
-After deploying on Render, add `config.yaml` and `service-account.json` as Secret Files.
+After deploying on Render, either add `config.yaml` and `service-account.json` as Secret Files,
+or fill in the hosted-mode variables. Hosted mode keeps its database on the service's disk at `/var/data`.
 
 ## Known limits
 
-- Run one instance only. The cache and the write locks live in the process.
+- Run one instance only. The cache, the write locks and hosted mode's per-user state live in the process.
+- In hosted mode, two users who add the same spreadsheet do not share write locks.
+- If a user revokes the app's access in their Google account, their keys return `502` until they sign in again.
 - An update or delete finds its row by id just before it writes. If someone inserts or deletes rows by hand in the sheet at that moment, the write can land on the wrong row.
 - Filters read the whole tab. Very large tabs will be slow until the cache has them.

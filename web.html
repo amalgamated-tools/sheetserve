@@ -1,0 +1,113 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sheetserve</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1.5rem; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+  form.inline { display: inline; }
+  .error { background: #fde8e8; border: 1px solid #f5b5b5; padding: .6rem .8rem; }
+  .key { background: #e8f6ea; border: 1px solid #a6d8ae; padding: .6rem .8rem; }
+  code { background: #f2f2f2; padding: .1rem .3rem; word-break: break-all; }
+  header { display: flex; justify-content: space-between; align-items: baseline; }
+  label { margin-right: .6rem; white-space: nowrap; }
+</style>
+</head>
+<body>
+{{end}}
+
+{{define "login"}}{{template "head"}}
+<h1>sheetserve</h1>
+<p>Serve your Google Sheets as a REST API and an MCP endpoint.</p>
+<p><a href="/login">Sign in with Google</a></p>
+</body></html>
+{{end}}
+
+{{define "app"}}{{template "head"}}
+<header>
+  <h1>sheetserve</h1>
+  <form class="inline" method="post" action="/logout">{{.Email}} <button>Sign out</button></form>
+</header>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{if .NewKey}}<p class="key">New key: <code>{{.NewKey}}</code><br>Copy it now. It is not stored and won't be shown again.</p>{{end}}
+
+<h2>Spreadsheets</h2>
+{{range .Sheets}}{{$sheet := .Name}}
+<h3>{{.Name}} <small>({{.Title}})</small>
+  <form class="inline" method="post" action="/app/sheets/delete"><input type="hidden" name="name" value="{{.Name}}"><button>Remove</button></form>
+</h3>
+<p>URL: <code>/v1/{{.Name}}/&lt;tab&gt;</code>. Each tab needs a header row with an <code>id</code> column.</p>
+<table>
+  <tr><th>Tab</th><th>Allowed ops</th><th>Hidden columns</th><th></th></tr>
+  {{range $i, $t := .Tabs}}{{$f := printf "tab-%s-%d" $sheet $i}}
+  <tr>
+    <td>{{.Name}}</td>
+    <td>{{range $.AllOps}}<label><input type="checkbox" form="{{$f}}" name="ops" value="{{.}}"{{if has $t.Ops .}} checked{{end}}> {{.}}</label>{{end}}</td>
+    <td><input form="{{$f}}" name="hidden" value="{{.Hidden}}" placeholder="cost, notes"></td>
+    <td><form id="{{$f}}" method="post" action="/app/tabs">
+      <input type="hidden" name="sheet" value="{{$sheet}}"><input type="hidden" name="tab" value="{{.Name}}">
+      <button>Save</button>
+    </form></td>
+  </tr>
+  {{end}}
+</table>
+{{else}}<p>No spreadsheets yet.</p>{{end}}
+
+<p><button id="pick">Add a spreadsheet from Google Drive</button></p>
+<form id="add" method="post" action="/app/sheets" hidden>
+  <input type="hidden" name="google_id"><input type="hidden" name="title">
+  <label>Name in URLs <input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
+  <button>Add</button>
+</form>
+
+<h2>API keys</h2>
+{{if .Keys}}
+<table>
+  <tr><th>Name</th><th>Tabs</th><th>Ops</th><th></th></tr>
+  {{range .Keys}}
+  <tr><td>{{.Name}}</td><td>{{.Tabs}}</td><td>{{.Ops}}</td>
+    <td><form class="inline" method="post" action="/app/keys/delete"><input type="hidden" name="name" value="{{.Name}}"><button>Revoke</button></form></td></tr>
+  {{end}}
+</table>
+{{else}}<p>No keys yet.</p>{{end}}
+
+<h3>New key</h3>
+<form method="post" action="/app/keys">
+  <p><label>Name <input name="name" required></label></p>
+  <p>Tabs: {{range .TabSpecs}}<label><input type="checkbox" name="tabs" value="{{.}}"> {{.}}</label> {{end}}</p>
+  <p>Limit to ops (optional): {{range .AllOps}}<label><input type="checkbox" name="ops" value="{{.}}"> {{.}}</label>{{end}}</p>
+  <button>Create key</button>
+</form>
+<p>Use a key as <code>Authorization: Bearer &lt;key&gt;</code> on <code>/v1/…</code>, <code>/mcp</code> and <code>/openapi.json</code>.</p>
+
+<script src="https://apis.google.com/js/api.js"></script>
+<script>
+document.getElementById("pick").onclick = async () => {
+  const res = await fetch("/app/token");
+  const body = await res.json();
+  if (!res.ok) { alert(body.error); return; }
+  gapi.load("picker", () => {
+    new google.picker.PickerBuilder()
+      .addView(new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS))
+      .setOAuthToken(body.token)
+      .setDeveloperKey({{.PickerKey}})
+      .setAppId({{.AppID}})
+      .setCallback((data) => {
+        if (data.action !== google.picker.Action.PICKED) return;
+        const doc = data.docs[0], form = document.getElementById("add");
+        form.google_id.value = doc.id;
+        form.title.value = doc.name;
+        form.name.value = doc.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+        form.hidden = false;
+        form.name.focus();
+      })
+      .build()
+      .setVisible(true);
+  });
+};
+</script>
+</body></html>
+{{end}}

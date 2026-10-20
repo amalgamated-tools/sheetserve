@@ -34,7 +34,7 @@ type Service struct {
 
 	mu    sync.Mutex
 	cache map[string]snapshot
-	locks sync.Map // "sheet/tab" -> *sync.Mutex
+	locks *sync.Map // "sheet/tab" -> *sync.Mutex
 }
 
 type snapshot struct {
@@ -44,7 +44,7 @@ type snapshot struct {
 }
 
 func newService(cfg *Config, store Store) *Service {
-	return &Service{cfg: cfg, store: store, cache: map[string]snapshot{}}
+	return &Service{cfg: cfg, store: store, cache: map[string]snapshot{}, locks: &sync.Map{}}
 }
 
 // ponytail: in-process cache and locks; a second replica needs Redis + a distributed lock.

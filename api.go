@@ -18,7 +18,9 @@ type API struct {
 
 type handlerFunc func(r *http.Request, sheet, tab string) (int, any, error)
 
-func (a *API) routes() http.Handler {
+func (a *API) routes() http.Handler { return a.cors(a.mux()) }
+
+func (a *API) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.Handle("GET /v1/{sheet}/{tab}", a.endpoint("read", a.list))
@@ -28,7 +30,7 @@ func (a *API) routes() http.Handler {
 	mux.Handle("DELETE /v1/{sheet}/{tab}/{id}", a.endpoint("delete", a.delete))
 	mux.HandleFunc("GET /openapi.json", a.openAPIHandler)
 	mux.Handle("/mcp", a.mcpHandler())
-	return a.cors(mux)
+	return mux
 }
 
 // cors lets browsers on the configured origins call the API. Keys travel in the Authorization

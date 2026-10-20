@@ -1,13 +1,31 @@
-# Add two Secret Files in the Render dashboard after deploying:
-#   config.yaml and service-account.json
+# Two modes:
+# - Config file: add Secret Files config.yaml and service-account.json in the Render dashboard.
+# - Hosted (Google sign-in): leave out config.yaml (or list no spreadsheets in it) and fill in
+#   the GOOGLE_* and SHEETSERVE_SECRET values below. See "Hosted mode" in the README.
 services:
   - type: web
     name: sheetserve
     runtime: docker
     plan: starter
     healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: SHEETSERVE_CONFIG
         value: /etc/secrets/config.yaml
       - key: GOOGLE_APPLICATION_CREDENTIALS
         value: /etc/secrets/service-account.json
+      - key: SHEETSERVE_DB
+        value: /var/data/sheetserve.db
+      - key: SHEETSERVE_SECRET   # openssl rand -base64 32
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_PICKER_API_KEY
+        sync: false
+      - key: GOOGLE_PROJECT_NUMBER
+        sync: false
