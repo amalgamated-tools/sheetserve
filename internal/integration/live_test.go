@@ -48,9 +48,11 @@ func TestLive(t *testing.T) {
 	}
 	gid := resp.Replies[0].AddSheet.Properties.SheetId
 	t.Cleanup(func() {
-		sheetsSvc.Spreadsheets.BatchUpdate(sheetID, &sheets.BatchUpdateSpreadsheetRequest{
+		if _, err := sheetsSvc.Spreadsheets.BatchUpdate(sheetID, &sheets.BatchUpdateSpreadsheetRequest{
 			Requests: []*sheets.Request{{DeleteSheet: &sheets.DeleteSheetRequest{SheetId: gid}}},
-		}).Context(context.Background()).Do()
+		}).Context(context.Background()).Do(); err != nil {
+			t.Errorf("delete scratch tab: %v", err)
+		}
 	})
 	setRow := func(rng string, row []any, input string) {
 		t.Helper()
@@ -93,7 +95,7 @@ func TestLive(t *testing.T) {
 
 	// A formula in another column must survive an update of qty.
 	setRow("D2", []any{"=C2*10"}, "USER_ENTERED")
-	got, err = svc.Update(ctx, "live", tab, idA, map[string]any{"qty": 5})
+	_, err = svc.Update(ctx, "live", tab, idA, map[string]any{"qty": 5})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -118,7 +120,6 @@ func TestLive(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0]["id"] != idB || rows[0]["qty"] != float64(7) {
 		t.Fatalf("list after delete: %v %v", rows, err)
 	}
-
 }
 
 func quotedTab(tab string) string { return "'" + strings.ReplaceAll(tab, "'", "''") + "'" }

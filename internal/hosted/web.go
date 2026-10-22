@@ -62,7 +62,9 @@ func (m *multiTenant) web() http.Handler {
 			m.render(w, r, user{id, email}, page{}, http.StatusOK)
 			return
 		}
-		webTmpl.ExecuteTemplate(w, "login", nil)
+		if err := webTmpl.ExecuteTemplate(w, "login", nil); err != nil {
+			slog.Error("template", "err", err)
+		}
 	})
 	mux.HandleFunc("POST /logout", m.logout)
 	mux.HandleFunc("GET /app/token", m.signedIn(m.token))
@@ -139,7 +141,10 @@ func (m *multiTenant) deleteSheet(w http.ResponseWriter, r *http.Request, u user
 
 // ponytail: hidden columns are free text; read the header row to offer checkboxes if typos bite.
 func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		m.render(w, r, u, page{Error: "could not read the form"}, http.StatusBadRequest)
+		return
+	}
 	var hidden []string
 	for h := range strings.SplitSeq(r.FormValue("hidden"), ",") {
 		if h = strings.TrimSpace(h); h != "" {
@@ -160,7 +165,10 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 }
 
 func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) {
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		m.render(w, r, u, page{Error: "could not read the form"}, http.StatusBadRequest)
+		return
+	}
 	key := config.NewKey()
 	err := m.db.update(r.Context(), u.id, m.global, func(tx *sql.Tx) error {
 		if len(r.Form["tabs"]) == 0 {

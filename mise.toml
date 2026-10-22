@@ -1,0 +1,63 @@
+[tools]
+go = "1.27.2"
+golangci-lint = "2.14.0"
+
+[env]
+# Local settings and secrets for hosted mode. Copy .env.example to .env.
+_.file = ".env"
+
+[tasks.build]
+description = "Build the sheetserve binary"
+sources = ["go.mod", "go.sum", "cmd/**/*.go", "internal/**/*.go", "internal/**/*.html"]
+outputs = ["sheetserve"]
+run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sheetserve ./cmd/server"
+
+[tasks.run]
+description = "Run the server (config mode by default; set SHEETSERVE_CONFIG for hosted mode)"
+env = { GOOGLE_APPLICATION_CREDENTIALS = "service-account.json" }
+run = "go run ./cmd/server"
+
+[tasks.keygen]
+description = "Generate an API key and its SHA-256 hash"
+run = "go run ./cmd/server keygen"
+
+[tasks.test]
+description = "Run unit tests"
+run = "go test ./..."
+
+[tasks."test:race"]
+description = "Run unit tests with the race detector"
+run = "go test -race ./..."
+
+[tasks."test:live"]
+description = "Run the live Google Sheets test (needs SHEETSERVE_LIVE_SHEET_ID)"
+env = { GOOGLE_APPLICATION_CREDENTIALS = "service-account.json" }
+run = "go test -count=1 -v -run TestLive ./internal/integration"
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.fmt]
+description = "Format Go source"
+run = "golangci-lint fmt ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.tidy]
+description = "Tidy go.mod and go.sum"
+run = "go mod tidy"
+
+[tasks.check]
+description = "Run vet, lint and tests"
+depends = ["vet", "lint", "test"]
+
+[tasks."docker:build"]
+description = "Build the Docker image"
+run = "docker build -t sheetserve ."
+
+[tasks.clean]
+description = "Remove build output"
+run = "rm -f sheetserve"

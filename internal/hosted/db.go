@@ -78,7 +78,7 @@ func openDB(path string, secret []byte) (*DB, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("init %s: %w", path, err)
 	}
 	return &DB{db, aead}, nil
@@ -220,7 +220,7 @@ func scan(ctx context.Context, q querier, query string, userID int64, fn func(*s
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		if err := fn(rows); err != nil {
 			return err
@@ -235,7 +235,7 @@ func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	return fn(tx)
 }
 
@@ -246,7 +246,7 @@ func (d *DB) update(ctx context.Context, userID int64, global *config.Config, fn
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
 		return err
 	}

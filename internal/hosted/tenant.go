@@ -66,7 +66,7 @@ func (m *multiTenant) tokenSource(userID int64) (oauth2.TokenSource, error) {
 
 func (m *multiTenant) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /login", m.login)
 	mux.HandleFunc("GET /auth/callback", m.callback)
 	apiHandler := http.HandlerFunc(m.serveAPI)
@@ -186,7 +186,7 @@ func (m *multiTenant) signIn(ctx context.Context, code, verifier string) (int64,
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var info struct{ Sub, Email string }
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || resp.StatusCode != http.StatusOK || info.Sub == "" {
 		return 0, fmt.Errorf("userinfo: status %d, err %v", resp.StatusCode, err)

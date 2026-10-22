@@ -59,7 +59,7 @@ func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptes
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	global := &config.Config{}
 	if err := global.Validate(); err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func send(t *testing.T, c *http.Client, req *http.Request) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
 }
@@ -200,13 +200,13 @@ func TestHostedSignIn(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "refresh_token": "rt-new", "expires_in": 3600})
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "refresh_token": "rt-new", "expires_in": 3600})
 		case "/userinfo":
 			if r.Header.Get("Authorization") != "Bearer at" {
-				http.Error(w, "no token", 401)
+				http.Error(w, "no token", http.StatusUnauthorized)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
 		}
 	}))
 	defer google.Close()
@@ -219,16 +219,15 @@ func TestHostedSignIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	loc, _ := url.Parse(resp.Header.Get("Location"))
-	if q := loc.Query(); q.Get("access_type") != "offline" || q.Get("code_challenge") == "" {
+	if q := loc.Query(); q.Get("access_type") != "offline" || q.Get("code_challenge") == "" || q.Get("state") == "" {
 		t.Fatalf("auth url: %s", loc)
 	}
-	state := loc.Query().Get("state")
 
 	if s, _ := get(t, c, srv.URL+"/auth/callback?code=good-code&state=WRONG", ""); s != 400 {
 		t.Errorf("bad state: %d", s)
 	}
 	resp, _ = c.Get(srv.URL + "/login") // the failed attempt cleared the state cookie
-	state = must(url.Parse(resp.Header.Get("Location"))).Query().Get("state")
+	state := must(url.Parse(resp.Header.Get("Location"))).Query().Get("state")
 	if s, body := get(t, c, srv.URL+"/auth/callback?code=good-code&state="+url.QueryEscape(state), ""); s != 303 {
 		t.Fatalf("callback: %d %s", s, body)
 	}
