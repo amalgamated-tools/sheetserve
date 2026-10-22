@@ -14,6 +14,8 @@ services:
     envVars:
       - key: SHEETSERVE_DB
         value: /var/data/sheetserve.db
+      - key: SHEETSERVE_CACHE_TTL # Sheets allows 60 reads per minute per user
+        value: 60s
       - key: SHEETSERVE_SECRET   # openssl rand -base64 32
         sync: false
       - key: GOOGLE_CLIENT_ID
