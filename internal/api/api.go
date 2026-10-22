@@ -37,7 +37,7 @@ func WriteJSON(w http.ResponseWriter, status int, body any) { writeJSON(w, statu
 
 func (a *API) mux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.Handle("GET /v1/{sheet}/{tab}", a.endpoint("read", a.list))
 	mux.Handle("GET /v1/{sheet}/{tab}/{id}", a.endpoint("read", a.get))
 	mux.Handle("POST /v1/{sheet}/{tab}", a.endpoint("create", a.create))
@@ -184,5 +184,7 @@ func bearer(r *http.Request) string {
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		slog.Error("write response", "err", err)
+	}
 }

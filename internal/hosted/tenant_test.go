@@ -3,6 +3,7 @@ package hosted
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -59,7 +60,7 @@ func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptes
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	global := &config.Config{}
 	if err := global.Validate(); err != nil {
 		t.Fatal(err)
@@ -100,7 +101,7 @@ func send(t *testing.T, c *http.Client, req *http.Request) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
 }
@@ -189,6 +190,90 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	}
 }
 
+// A spreadsheet added by URL is read with the service account, while picked ones keep using the
+// user's token, and the dashboard only offers the URL form when a service account is configured.
+func TestServiceAccountSheets(t *testing.T) {
+	userStore := &fakeStore{tabs: map[string][][]any{"MINE/Orders": {{"id", "item"}, {"o1", "mug"}}}}
+	saStore := &fakeStore{tabs: map[string][][]any{"SHARED/Log": {{"id", "msg"}, {"l1", "hello"}}}}
+	m, srv := newTestHosted(t, userStore)
+	alice := signInAs(t, m, srv, "alice")
+
+	if _, body := get(t, alice, srv.URL+"/", ""); strings.Contains(body, "Add by URL") {
+		t.Error("URL form shown without a service account")
+	}
+	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"SHARED"}, "name": {"log"}}); s != 400 || !strings.Contains(body, "no service account") {
+		t.Errorf("add by URL without a service account: %d %s", s, body)
+	}
+
+	m.saStore, m.saEmail = saStore, "sa@proj.iam.gserviceaccount.com"
+	if _, body := get(t, alice, srv.URL+"/", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
+		t.Error("URL form does not name the service account")
+	}
+	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"not a url!"}, "name": {"log"}}); s != 400 {
+		t.Errorf("bad URL: %d %s", s, body)
+	}
+	for _, f := range []url.Values{
+		{"via": {"service_account"}, "url": {"https://docs.google.com/spreadsheets/d/SHARED/edit#gid=0"}, "name": {"log"}},
+		{"name": {"shop"}, "google_id": {"MINE"}, "title": {"Shop"}},
+	} {
+		if s, body := post(t, alice, srv.URL+"/app/sheets", f); s != 303 {
+			t.Fatalf("add sheet %v: %d %s", f, s, body)
+		}
+	}
+	if _, body := get(t, alice, srv.URL+"/", ""); !strings.Contains(body, "via service account") {
+		t.Error("dashboard does not mark the service account sheet")
+	}
+	for _, tab := range [][2]string{{"log", "Log"}, {"shop", "Orders"}} {
+		if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {tab[0]}, "tab": {tab[1]}, "ops": {"read"}}); s != 303 {
+			t.Fatalf("save tab %v: %d %s", tab, s, body)
+		}
+	}
+	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"k"}, "tabs": {"*"}})
+	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
+
+	c := browser(t)
+	if s, body := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 || !strings.Contains(body, `"hello"`) {
+		t.Errorf("service account sheet: %d %s", s, body)
+	}
+	if s, body := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 || !strings.Contains(body, `"mug"`) {
+		t.Errorf("user sheet: %d %s", s, body)
+	}
+
+	// Without the user's Google token, the service account sheet keeps working.
+	m.newStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
+	m.invalidate(1)
+	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 {
+		t.Errorf("service account sheet without user token: %d", s)
+	}
+	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 502 {
+		t.Errorf("user sheet without user token: %d", s)
+	}
+
+	// If the server loses its service account, only those sheets fail.
+	m.newStore = func(int64) (store.Store, error) { return userStore, nil }
+	m.saStore = nil
+	m.invalidate(1)
+	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 502 {
+		t.Errorf("service account sheet with no service account: %d", s)
+	}
+	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 {
+		t.Errorf("user sheet with no service account: %d", s)
+	}
+}
+
+func TestSpreadsheetID(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://docs.google.com/spreadsheets/d/1AbC-d_E/edit#gid=0": "1AbC-d_E",
+		" 1AbC-d_E ":           "1AbC-d_E",
+		"https://example.com/": "",
+		"":                     "",
+	} {
+		if got := spreadsheetID(in); got != want {
+			t.Errorf("spreadsheetID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // The OAuth callback checks state, stores the refresh token encrypted, and starts a session.
 func TestHostedSignIn(t *testing.T) {
 	m, srv := newTestHosted(t, &fakeStore{})
@@ -200,13 +285,13 @@ func TestHostedSignIn(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "refresh_token": "rt-new", "expires_in": 3600})
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "refresh_token": "rt-new", "expires_in": 3600})
 		case "/userinfo":
 			if r.Header.Get("Authorization") != "Bearer at" {
-				http.Error(w, "no token", 401)
+				http.Error(w, "no token", http.StatusUnauthorized)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
 		}
 	}))
 	defer google.Close()
@@ -219,16 +304,15 @@ func TestHostedSignIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	loc, _ := url.Parse(resp.Header.Get("Location"))
-	if q := loc.Query(); q.Get("access_type") != "offline" || q.Get("code_challenge") == "" {
+	if q := loc.Query(); q.Get("access_type") != "offline" || q.Get("code_challenge") == "" || q.Get("state") == "" {
 		t.Fatalf("auth url: %s", loc)
 	}
-	state := loc.Query().Get("state")
 
 	if s, _ := get(t, c, srv.URL+"/auth/callback?code=good-code&state=WRONG", ""); s != 400 {
 		t.Errorf("bad state: %d", s)
 	}
 	resp, _ = c.Get(srv.URL + "/login") // the failed attempt cleared the state cookie
-	state = must(url.Parse(resp.Header.Get("Location"))).Query().Get("state")
+	state := must(url.Parse(resp.Header.Get("Location"))).Query().Get("state")
 	if s, body := get(t, c, srv.URL+"/auth/callback?code=good-code&state="+url.QueryEscape(state), ""); s != 303 {
 		t.Fatalf("callback: %d %s", s, body)
 	}

@@ -1,0 +1,64 @@
+[tools]
+go = "1.27.2"
+golangci-lint = "2.14.0"
+# Same version as go.mod, for creating migrations.
+"go:github.com/pressly/goose/v3/cmd/goose" = "3.28.0"
+
+[env]
+# Local settings and secrets. Copy .env.example to .env.
+_.file = ".env"
+
+[tasks.build]
+description = "Build the sheetserve binary"
+sources = ["go.mod", "go.sum", "cmd/**/*.go", "internal/**/*.go", "internal/**/*.html"]
+outputs = ["sheetserve"]
+run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sheetserve ./cmd/server"
+
+[tasks.run]
+description = "Run the server"
+run = "go run ./cmd/server"
+
+[tasks.test]
+description = "Run unit tests"
+run = "go test ./..."
+
+[tasks."test:race"]
+description = "Run unit tests with the race detector"
+run = "go test -race ./..."
+
+[tasks."test:live"]
+description = "Run the live Google Sheets test (needs SHEETSERVE_LIVE_SHEET_ID and GOOGLE_APPLICATION_CREDENTIALS)"
+run = "go test -count=1 -v -run TestLive ./internal/integration"
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.fmt]
+description = "Format Go source"
+run = "golangci-lint fmt ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.tidy]
+description = "Tidy go.mod and go.sum"
+run = "go mod tidy"
+
+[tasks."db:new"]
+description = "Create a new SQL migration in internal/hosted/migrations"
+usage = 'arg "<name>" help="Migration name, such as add_roles"'
+run = 'goose -dir internal/hosted/migrations -s create "$usage_name" sql'
+
+[tasks.check]
+description = "Run vet, lint and tests"
+depends = ["vet", "lint", "test"]
+
+[tasks."docker:build"]
+description = "Build the Docker image"
+run = "docker build -t sheetserve ."
+
+[tasks.clean]
+description = "Remove build output"
+run = "rm -f sheetserve"

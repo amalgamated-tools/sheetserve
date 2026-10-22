@@ -6,60 +6,28 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
-// DB holds hosted-mode state: users, their sessions, and the per-user equivalent of config.yaml.
+// DB holds the server's state: users, their sessions, and each user's spreadsheets, tabs and keys.
 type DB struct {
 	*sql.DB
 	aead cipher.AEAD // encrypts refresh tokens at rest
 }
 
-// ponytail: no migration tool; schema changes need one.
-const schema = `
-CREATE TABLE IF NOT EXISTS users (
-	id INTEGER PRIMARY KEY,
-	google_sub TEXT NOT NULL UNIQUE,
-	email TEXT NOT NULL,
-	refresh_token BLOB
-);
-CREATE TABLE IF NOT EXISTS sessions (
-	token_hash TEXT PRIMARY KEY,
-	user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-	expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS spreadsheets (
-	user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-	name TEXT NOT NULL,
-	google_id TEXT NOT NULL,
-	title TEXT NOT NULL,
-	PRIMARY KEY (user_id, name)
-);
-CREATE TABLE IF NOT EXISTS tabs (
-	user_id INTEGER NOT NULL,
-	sheet TEXT NOT NULL,
-	tab TEXT NOT NULL,
-	ops TEXT NOT NULL,    -- JSON array
-	hidden TEXT NOT NULL, -- JSON array
-	PRIMARY KEY (user_id, sheet, tab),
-	FOREIGN KEY (user_id, sheet) REFERENCES spreadsheets ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS api_keys (
-	hash TEXT PRIMARY KEY,
-	user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-	name TEXT NOT NULL,
-	tabs TEXT NOT NULL, -- JSON array
-	ops TEXT NOT NULL,  -- JSON array
-	UNIQUE (user_id, name)
-);`
+//go:embed migrations/*.sql
+var migrations embed.FS
 
 // openDB opens (creating if needed) the SQLite file at path. secret is the 32-byte AES key for refresh tokens.
 func openDB(path string, secret []byte) (*DB, error) {
@@ -77,11 +45,25 @@ func openDB(path string, secret []byte) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+	if err := migrate(context.Background(), db); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("init %s: %w", path, err)
 	}
 	return &DB{db, aead}, nil
+}
+
+// migrate applies any migrations in migrations/ that db has not run yet. Add one with `mise run db:new <name>`.
+func migrate(ctx context.Context, db *sql.DB) error {
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		return err
+	}
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		return err
+	}
+	_, err = p.Up(ctx)
+	return err
 }
 
 func (d *DB) encrypt(plain string) []byte {
@@ -166,16 +148,17 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// userConfig builds userID's Config from the database, with listen/cache/CORS settings from global.
+// userConfig builds userID's Config from the database, with the server-wide settings from global.
 func userConfig(ctx context.Context, q querier, userID int64, global *config.Config) (*config.Config, error) {
 	cfg := &config.Config{Listen: global.Listen, CacheTTL: global.CacheTTL, CORSOrigins: global.CORSOrigins,
 		Spreadsheets: map[string]config.Spreadsheet{}}
-	err := scan(ctx, q, `SELECT name, google_id FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+	err := scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 		var name, id string
-		if err := rows.Scan(&name, &id); err != nil {
+		var sa bool
+		if err := rows.Scan(&name, &id, &sa); err != nil {
 			return err
 		}
-		cfg.Spreadsheets[name] = config.Spreadsheet{ID: id, Tabs: map[string]config.TabRule{}}
+		cfg.Spreadsheets[name] = config.Spreadsheet{ID: id, ServiceAccount: sa, Tabs: map[string]config.TabRule{}}
 		return nil
 	})
 	if err == nil {
@@ -220,7 +203,7 @@ func scan(ctx context.Context, q querier, query string, userID int64, fn func(*s
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		if err := fn(rows); err != nil {
 			return err
@@ -235,7 +218,7 @@ func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	return fn(tx)
 }
 
@@ -246,7 +229,7 @@ func (d *DB) update(ctx context.Context, userID int64, global *config.Config, fn
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
 		return err
 	}
