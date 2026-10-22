@@ -1,7 +1,6 @@
-# Two modes:
-# - Config file: add Secret Files config.yaml and service-account.json in the Render dashboard.
-# - Hosted (Google sign-in): leave out config.yaml (or list no spreadsheets in it) and fill in
-#   the GOOGLE_* and SHEETSERVE_SECRET values below. See "Hosted mode" in the README.
+# Fill in the GOOGLE_* and SHEETSERVE_SECRET values in the Render dashboard. See "Setup" in the README.
+# Optional service account: add a Secret File named service-account.json, then add the env var
+# GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/service-account.json.
 services:
   - type: web
     name: sheetserve
@@ -13,10 +12,6 @@ services:
       mountPath: /var/data
       sizeGB: 1
     envVars:
-      - key: SHEETSERVE_CONFIG
-        value: /etc/secrets/config.yaml
-      - key: GOOGLE_APPLICATION_CREDENTIALS
-        value: /etc/secrets/service-account.json
       - key: SHEETSERVE_DB
         value: /var/data/sheetserve.db
       - key: SHEETSERVE_SECRET   # openssl rand -base64 32

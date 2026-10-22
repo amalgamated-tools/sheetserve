@@ -36,7 +36,7 @@
 
 <h2>Spreadsheets</h2>
 {{range .Sheets}}{{$sheet := .Name}}
-<h3>{{.Name}} <small>({{.Title}})</small>
+<h3>{{.Name}} <small>({{.Title}}{{if .ServiceAccount}}, via service account{{end}})</small>
   <form class="inline" method="post" action="/app/sheets/delete"><input type="hidden" name="name" value="{{.Name}}"><button>Remove</button></form>
 </h3>
 <p>URL: <code>/v1/{{.Name}}/&lt;tab&gt;</code>. Each tab needs a header row with an <code>id</code> column.</p>
@@ -62,6 +62,16 @@
   <label>Name in URLs <input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
   <button>Add</button>
 </form>
+{{if .SAEmail}}
+<form method="post" action="/app/sheets">
+  <p>Or share a spreadsheet with <code>{{.SAEmail}}</code> (Viewer to read, Editor to write) and add it by URL.
+  The server then reaches it with its service account, so its keys don't depend on your Google sign-in.</p>
+  <input type="hidden" name="via" value="service_account">
+  <label>URL <input name="url" placeholder="https://docs.google.com/spreadsheets/d/…" size="40" required></label>
+  <label>Name in URLs <input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
+  <button>Add by URL</button>
+</form>
+{{end}}
 
 <h2>API keys</h2>
 {{if .Keys}}

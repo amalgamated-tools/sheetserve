@@ -3,7 +3,7 @@ go = "1.27.2"
 golangci-lint = "2.14.0"
 
 [env]
-# Local settings and secrets for hosted mode. Copy .env.example to .env.
+# Local settings and secrets. Copy .env.example to .env.
 _.file = ".env"
 
 [tasks.build]
@@ -13,13 +13,8 @@ outputs = ["sheetserve"]
 run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sheetserve ./cmd/server"
 
 [tasks.run]
-description = "Run the server (config mode by default; set SHEETSERVE_CONFIG for hosted mode)"
-env = { GOOGLE_APPLICATION_CREDENTIALS = "service-account.json" }
+description = "Run the server"
 run = "go run ./cmd/server"
-
-[tasks.keygen]
-description = "Generate an API key and its SHA-256 hash"
-run = "go run ./cmd/server keygen"
 
 [tasks.test]
 description = "Run unit tests"
@@ -30,8 +25,7 @@ description = "Run unit tests with the race detector"
 run = "go test -race ./..."
 
 [tasks."test:live"]
-description = "Run the live Google Sheets test (needs SHEETSERVE_LIVE_SHEET_ID)"
-env = { GOOGLE_APPLICATION_CREDENTIALS = "service-account.json" }
+description = "Run the live Google Sheets test (needs SHEETSERVE_LIVE_SHEET_ID and GOOGLE_APPLICATION_CREDENTIALS)"
 run = "go test -count=1 -v -run TestLive ./internal/integration"
 
 [tasks.lint]

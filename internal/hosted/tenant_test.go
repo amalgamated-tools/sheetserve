@@ -2,7 +2,9 @@ package hosted
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -186,6 +188,118 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	if s, _ := send(t, alice, req); s != 403 {
 		t.Errorf("cross-site post: %d", s)
+	}
+}
+
+// A spreadsheet added by URL is read with the service account, while picked ones keep using the
+// user's token, and the dashboard only offers the URL form when a service account is configured.
+func TestServiceAccountSheets(t *testing.T) {
+	userStore := &fakeStore{tabs: map[string][][]any{"MINE/Orders": {{"id", "item"}, {"o1", "mug"}}}}
+	saStore := &fakeStore{tabs: map[string][][]any{"SHARED/Log": {{"id", "msg"}, {"l1", "hello"}}}}
+	m, srv := newTestHosted(t, userStore)
+	alice := signInAs(t, m, srv, "alice")
+
+	if _, body := get(t, alice, srv.URL+"/", ""); strings.Contains(body, "Add by URL") {
+		t.Error("URL form shown without a service account")
+	}
+	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"SHARED"}, "name": {"log"}}); s != 400 || !strings.Contains(body, "no service account") {
+		t.Errorf("add by URL without a service account: %d %s", s, body)
+	}
+
+	m.saStore, m.saEmail = saStore, "sa@proj.iam.gserviceaccount.com"
+	if _, body := get(t, alice, srv.URL+"/", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
+		t.Error("URL form does not name the service account")
+	}
+	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"not a url!"}, "name": {"log"}}); s != 400 {
+		t.Errorf("bad URL: %d %s", s, body)
+	}
+	for _, f := range []url.Values{
+		{"via": {"service_account"}, "url": {"https://docs.google.com/spreadsheets/d/SHARED/edit#gid=0"}, "name": {"log"}},
+		{"name": {"shop"}, "google_id": {"MINE"}, "title": {"Shop"}},
+	} {
+		if s, body := post(t, alice, srv.URL+"/app/sheets", f); s != 303 {
+			t.Fatalf("add sheet %v: %d %s", f, s, body)
+		}
+	}
+	if _, body := get(t, alice, srv.URL+"/", ""); !strings.Contains(body, "via service account") {
+		t.Error("dashboard does not mark the service account sheet")
+	}
+	for _, tab := range [][2]string{{"log", "Log"}, {"shop", "Orders"}} {
+		if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {tab[0]}, "tab": {tab[1]}, "ops": {"read"}}); s != 303 {
+			t.Fatalf("save tab %v: %d %s", tab, s, body)
+		}
+	}
+	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"k"}, "tabs": {"*"}})
+	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
+
+	c := browser(t)
+	if s, body := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 || !strings.Contains(body, `"hello"`) {
+		t.Errorf("service account sheet: %d %s", s, body)
+	}
+	if s, body := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 || !strings.Contains(body, `"mug"`) {
+		t.Errorf("user sheet: %d %s", s, body)
+	}
+
+	// Without the user's Google token, the service account sheet keeps working.
+	m.newStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
+	m.invalidate(1)
+	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 {
+		t.Errorf("service account sheet without user token: %d", s)
+	}
+	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 502 {
+		t.Errorf("user sheet without user token: %d", s)
+	}
+
+	// If the server loses its service account, only those sheets fail.
+	m.newStore = func(int64) (store.Store, error) { return userStore, nil }
+	m.saStore = nil
+	m.invalidate(1)
+	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 502 {
+		t.Errorf("service account sheet with no service account: %d", s)
+	}
+	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 {
+		t.Errorf("user sheet with no service account: %d", s)
+	}
+}
+
+// A database made before service account support gains the column, and its sheets use the user's token.
+func TestSchemaUpgrade(t *testing.T) {
+	path := t.TempDir() + "/old.db"
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL, refresh_token BLOB);
+		CREATE TABLE spreadsheets (user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE, name TEXT NOT NULL,
+			google_id TEXT NOT NULL, title TEXT NOT NULL, PRIMARY KEY (user_id, name));
+		INSERT INTO users (id, google_sub, email) VALUES (1, 's', 's@example.com');
+		INSERT INTO spreadsheets VALUES (1, 'shop', 'SS', 'Shop');`); err != nil {
+		t.Fatal(err)
+	}
+	_ = old.Close()
+	for range 2 { // the second open must find the column already there
+		db, err := openDB(path, make([]byte, 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := userConfig(context.Background(), db, 1, &config.Config{})
+		_ = db.Close()
+		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" || cfg.Spreadsheets["shop"].ServiceAccount {
+			t.Fatalf("upgraded config: %+v %v", cfg, err)
+		}
+	}
+}
+
+func TestSpreadsheetID(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://docs.google.com/spreadsheets/d/1AbC-d_E/edit#gid=0": "1AbC-d_E",
+		" 1AbC-d_E ":           "1AbC-d_E",
+		"https://example.com/": "",
+		"":                     "",
+	} {
+		if got := spreadsheetID(in); got != want {
+			t.Errorf("spreadsheetID(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

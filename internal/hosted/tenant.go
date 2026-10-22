@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,8 +21,9 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
-// multiTenant serves hosted mode: users sign in with Google, and each user's API keys reach an
-// *API built from that user's rows in the database, calling Google with that user's credentials.
+// multiTenant serves the app: users sign in with Google, and each user's API keys reach an *API
+// built from that user's rows in the database. It calls Google with that user's credentials, or
+// with the server's service account for spreadsheets added that way.
 type multiTenant struct {
 	global      *config.Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from db
 	db          *DB
@@ -31,6 +33,8 @@ type multiTenant struct {
 	pickerKey   string // browser API key for Google Picker
 	appID       string // Cloud project number, so picked files are granted to this app
 	newStore    func(userID int64) (store.Store, error)
+	saStore     store.Store // the server's service account; nil when none is configured
+	saEmail     string      // the address users share spreadsheets with for saStore
 
 	mu      sync.Mutex
 	tenants map[int64]*tenant
@@ -110,11 +114,20 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	if err != nil {
 		return nil, err
 	}
-	store, err := m.newStore(userID)
-	if err != nil {
-		return nil, err
+	rs := routedStore{sa: m.saStore, viaSA: map[string]bool{}}
+	// Without the user's token, their service account spreadsheets still work.
+	if rs.user, err = m.newStore(userID); err != nil {
+		rs.user = errStore{err}
 	}
-	svc := service.New(cfg, store)
+	if rs.sa == nil {
+		rs.sa = errStore{errors.New("spreadsheet needs the service account, but the server has none configured")}
+	}
+	for _, ss := range cfg.Spreadsheets {
+		if ss.ServiceAccount {
+			rs.viaSA[ss.ID] = true
+		}
+	}
+	svc := service.New(cfg, rs)
 	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
 	if m.locks[userID] == nil {
 		m.locks[userID] = &sync.Map{}
@@ -124,6 +137,49 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	m.tenants[userID] = t
 	return t, nil
 }
+
+// routedStore sends each spreadsheet to the user's credentials or the service account. If a user
+// added one spreadsheet both ways, the service account serves both, since it was checked on add.
+type routedStore struct {
+	user, sa store.Store
+	viaSA    map[string]bool // Google spreadsheet ids
+}
+
+func (r routedStore) pick(id string) store.Store {
+	if r.viaSA[id] {
+		return r.sa
+	}
+	return r.user
+}
+
+func (r routedStore) Read(ctx context.Context, id, tab string) ([][]any, error) {
+	return r.pick(id).Read(ctx, id, tab)
+}
+
+func (r routedStore) Append(ctx context.Context, id, tab string, row []any) error {
+	return r.pick(id).Append(ctx, id, tab, row)
+}
+
+func (r routedStore) SetCells(ctx context.Context, id, tab string, row int, cells map[int]any) error {
+	return r.pick(id).SetCells(ctx, id, tab, row, cells)
+}
+
+func (r routedStore) DeleteRow(ctx context.Context, id, tab string, row int) error {
+	return r.pick(id).DeleteRow(ctx, id, tab, row)
+}
+
+func (r routedStore) Tabs(ctx context.Context, id string) ([]string, error) {
+	return r.pick(id).Tabs(ctx, id)
+}
+
+// errStore fails every call; it stands in for credentials the server can't use.
+type errStore struct{ err error }
+
+func (e errStore) Read(context.Context, string, string) ([][]any, error)            { return nil, e.err }
+func (e errStore) Append(context.Context, string, string, []any) error              { return e.err }
+func (e errStore) SetCells(context.Context, string, string, int, map[int]any) error { return e.err }
+func (e errStore) DeleteRow(context.Context, string, string, int) error             { return e.err }
+func (e errStore) Tabs(context.Context, string) ([]string, error)                   { return nil, e.err }
 
 // invalidate drops userID's cached API so the next request sees their latest settings and token.
 func (m *multiTenant) invalidate(userID int64) {

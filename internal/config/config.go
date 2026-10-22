@@ -5,59 +5,58 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"slices"
 	"strings"
 	"time"
-
-	"go.yaml.in/yaml/v3"
 )
 
 var AllOps = []string{"read", "create", "update", "delete"}
 
+// Config is one user's spreadsheets and keys, plus the server-wide settings from FromEnv.
 type Config struct {
-	Listen       string                 `yaml:"listen"`
-	CacheTTL     time.Duration          `yaml:"cache_ttl"`
-	CORSOrigins  []string               `yaml:"cors_origins"`
-	Spreadsheets map[string]Spreadsheet `yaml:"spreadsheets"`
-	Keys         []Key                  `yaml:"keys"`
+	Listen       string
+	CacheTTL     time.Duration
+	CORSOrigins  []string
+	Spreadsheets map[string]Spreadsheet
+	Keys         []Key
 
 	byHash map[string]*Key
 }
 
 type Spreadsheet struct {
-	ID   string             `yaml:"id"`
-	Tabs map[string]TabRule `yaml:"tabs"`
+	ID             string
+	ServiceAccount bool // reached with the server's service account instead of the owner's Google token
+	Tabs           map[string]TabRule
 }
 
 type TabRule struct {
-	Ops    []string `yaml:"ops"`
-	Hidden []string `yaml:"hidden"`
+	Ops    []string
+	Hidden []string
 }
 
 type Key struct {
-	Name string   `yaml:"name"`
-	Hash string   `yaml:"hash"`
-	Tabs []string `yaml:"tabs"` // "*", "sheet/*" or "sheet/tab"
-	Ops  []string `yaml:"ops"`  // optional; narrows the tab's ops
+	Name string
+	Hash string
+	Tabs []string // "*", "sheet/*" or "sheet/tab"
+	Ops  []string // optional; narrows the tab's ops
 }
 
-// loadConfig reads path; a missing file is an empty config, which runs hosted mode.
-func Load(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		var c Config
-		return &c, c.Validate()
-	}
-	if err != nil {
-		return nil, err
-	}
+// FromEnv reads the server-wide settings: PORT, SHEETSERVE_CACHE_TTL and SHEETSERVE_CORS_ORIGINS.
+func FromEnv() (*Config, error) {
 	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	if ttl := os.Getenv("SHEETSERVE_CACHE_TTL"); ttl != "" {
+		d, err := time.ParseDuration(ttl)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("SHEETSERVE_CACHE_TTL: want a duration such as 60s, got %q", ttl)
+		}
+		c.CacheTTL = d
+	}
+	for o := range strings.SplitSeq(os.Getenv("SHEETSERVE_CORS_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			c.CORSOrigins = append(c.CORSOrigins, o)
+		}
 	}
 	return &c, c.Validate()
 }
@@ -84,7 +83,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("key #%d: missing name", i+1)
 		}
 		if h, ok := strings.CutPrefix(k.Hash, "sha256:"); !ok || len(h) != 64 {
-			return fmt.Errorf("key %q: hash must be sha256:<64 hex chars> (see `sheetserve keygen`)", k.Name)
+			return fmt.Errorf("key %q: hash must be sha256:<64 hex chars>", k.Name)
 		}
 		if _, dup := c.byHash[k.Hash]; dup {
 			return fmt.Errorf("key %q: duplicate hash", k.Name)

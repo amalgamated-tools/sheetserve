@@ -29,6 +29,20 @@ var webTmpl = template.Must(template.New("").Funcs(template.FuncMap{
 
 var sheetName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+var sheetURL = regexp.MustCompile(`/spreadsheets/d/([A-Za-z0-9_-]+)`)
+
+// spreadsheetID takes a spreadsheet URL or a bare id and returns the id, or "".
+func spreadsheetID(s string) string {
+	s = strings.TrimSpace(s)
+	if m := sheetURL.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	if sheetName.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
 type user struct {
 	id    int64
 	email string
@@ -36,14 +50,16 @@ type user struct {
 
 type page struct {
 	Email, Error, NewKey, PickerKey, AppID string
+	SAEmail                                string // set when the server has a service account
 	Sheets                                 []sheetView
 	Keys                                   []keyView
 	TabSpecs, AllOps                       []string
 }
 
 type sheetView struct {
-	Name, Title string
-	Tabs        []tabView
+	Name, Title    string
+	ServiceAccount bool
+	Tabs           []tabView
 }
 
 type tabView struct {
@@ -101,25 +117,48 @@ func (m *multiTenant) token(w http.ResponseWriter, r *http.Request, u user) {
 	api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "could not get a Google token; sign in again"})
 }
 
+// addSheet adds a spreadsheet picked from the user's Drive, or, with via=service_account, one
+// given by URL that the server reaches with its service account.
 func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	name, gid, title := r.FormValue("name"), r.FormValue("google_id"), r.FormValue("title")
-	if !sheetName.MatchString(name) || gid == "" {
+	viaSA := r.FormValue("via") == "service_account"
+	if viaSA {
+		if m.saStore == nil {
+			m.render(w, r, u, page{Error: "this server has no service account"}, http.StatusBadRequest)
+			return
+		}
+		gid, title = spreadsheetID(r.FormValue("url")), name
+	}
+	if !sheetName.MatchString(name) {
 		m.render(w, r, u, page{Error: "name must be letters, digits, - or _"}, http.StatusBadRequest)
 		return
 	}
-	t, err := m.tenant(r.Context(), u.id)
+	if gid == "" {
+		m.render(w, r, u, page{Error: "paste a Google Sheets URL"}, http.StatusBadRequest)
+		return
+	}
 	var tabs []string
-	if err == nil {
-		tabs, err = t.svc.Tabs(r.Context(), gid)
+	var err error
+	if viaSA {
+		tabs, err = m.saStore.Tabs(r.Context(), gid)
+	} else {
+		var t *tenant
+		if t, err = m.tenant(r.Context(), u.id); err == nil {
+			tabs, err = t.svc.Tabs(r.Context(), gid)
+		}
 	}
 	if err != nil {
-		slog.Error("read tabs", "user", u.id, "err", err)
-		m.render(w, r, u, page{Error: "could not read that spreadsheet from Google"}, http.StatusBadGateway)
+		slog.Error("read tabs", "user", u.id, "service_account", viaSA, "err", err)
+		msg := "could not read that spreadsheet from Google"
+		if viaSA {
+			msg += "; share it with " + m.saEmail + " first"
+		}
+		m.render(w, r, u, page{Error: msg}, http.StatusBadGateway)
 		return
 	}
 	m.change(w, r, u, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO spreadsheets (user_id, name, google_id, title) VALUES (?, ?, ?, ?)`,
-			u.id, name, gid, title); err != nil {
+		if _, err := tx.Exec(`INSERT INTO spreadsheets (user_id, name, google_id, title, service_account) VALUES (?, ?, ?, ?, ?)`,
+			u.id, name, gid, title, viaSA); err != nil {
 			return err
 		}
 		for _, tab := range tabs { // every tab starts off; the user enables ops per tab
@@ -221,7 +260,7 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
 	}
-	p.Email, p.PickerKey, p.AppID, p.AllOps = u.email, m.pickerKey, m.appID, config.AllOps
+	p.Email, p.PickerKey, p.AppID, p.SAEmail, p.AllOps = u.email, m.pickerKey, m.appID, m.saEmail, config.AllOps
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := webTmpl.ExecuteTemplate(w, "app", p); err != nil {
@@ -233,9 +272,9 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 // or a sheet added between the reads would leave its tabs without a sheet.
 func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page) error {
 	p.TabSpecs = []string{"*"}
-	err := scan(ctx, q, `SELECT name, title FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+	err := scan(ctx, q, `SELECT name, title, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 		var s sheetView
-		if err := rows.Scan(&s.Name, &s.Title); err != nil {
+		if err := rows.Scan(&s.Name, &s.Title, &s.ServiceAccount); err != nil {
 			return err
 		}
 		p.Sheets = append(p.Sheets, s)

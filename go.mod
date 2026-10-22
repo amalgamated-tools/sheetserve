@@ -4,7 +4,6 @@ go 1.27.0
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/oauth2 v0.37.0
 	google.golang.org/api v0.301.0
 	modernc.org/sqlite v1.60.1

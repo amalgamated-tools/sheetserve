@@ -17,7 +17,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
-// DB holds hosted-mode state: users, their sessions, and the per-user equivalent of config.yaml.
+// DB holds the server's state: users, their sessions, and each user's spreadsheets, tabs and keys.
 type DB struct {
 	*sql.DB
 	aead cipher.AEAD // encrypts refresh tokens at rest
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS spreadsheets (
 	name TEXT NOT NULL,
 	google_id TEXT NOT NULL,
 	title TEXT NOT NULL,
+	service_account INTEGER NOT NULL DEFAULT 0, -- 1: reached with the server's service account
 	PRIMARY KEY (user_id, name)
 );
 CREATE TABLE IF NOT EXISTS tabs (
@@ -77,11 +78,24 @@ func openDB(path string, secret []byte) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := initSchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("init %s: %w", path, err)
 	}
 	return &DB{db, aead}, nil
+}
+
+func initSchema(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	// Databases made before service account support lack this column.
+	var has bool
+	if err := db.QueryRow(`SELECT count(*) > 0 FROM pragma_table_info('spreadsheets') WHERE name = 'service_account'`).Scan(&has); err != nil || has {
+		return err
+	}
+	_, err := db.Exec(`ALTER TABLE spreadsheets ADD COLUMN service_account INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (d *DB) encrypt(plain string) []byte {
@@ -166,16 +180,17 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// userConfig builds userID's Config from the database, with listen/cache/CORS settings from global.
+// userConfig builds userID's Config from the database, with the server-wide settings from global.
 func userConfig(ctx context.Context, q querier, userID int64, global *config.Config) (*config.Config, error) {
 	cfg := &config.Config{Listen: global.Listen, CacheTTL: global.CacheTTL, CORSOrigins: global.CORSOrigins,
 		Spreadsheets: map[string]config.Spreadsheet{}}
-	err := scan(ctx, q, `SELECT name, google_id FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+	err := scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 		var name, id string
-		if err := rows.Scan(&name, &id); err != nil {
+		var sa bool
+		if err := rows.Scan(&name, &id, &sa); err != nil {
 			return err
 		}
-		cfg.Spreadsheets[name] = config.Spreadsheet{ID: id, Tabs: map[string]config.TabRule{}}
+		cfg.Spreadsheets[name] = config.Spreadsheet{ID: id, ServiceAccount: sa, Tabs: map[string]config.TabRule{}}
 		return nil
 	})
 	if err == nil {
