@@ -32,6 +32,10 @@ func New(cfg *config.Config) (http.Handler, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing environment variables %v", missing)
 	}
+	// Picker grants drive.file access only when its app ID is the numeric project number.
+	if strings.Trim(env["GOOGLE_PROJECT_NUMBER"], "0123456789") != "" {
+		return nil, errors.New("GOOGLE_PROJECT_NUMBER must be the numeric project number (the digits before the dash in GOOGLE_CLIENT_ID), not the project ID")
+	}
 	secret, err := base64.StdEncoding.DecodeString(env["SHEETSERVE_SECRET"])
 	if err != nil || len(secret) != 32 {
 		return nil, errors.New("SHEETSERVE_SECRET must be 32 random bytes, base64 (openssl rand -base64 32)")

@@ -47,9 +47,11 @@ type tenant struct {
 }
 
 func newMultiTenant(global *config.Config, db *DB, oauth *oauth2.Config) *multiTenant {
-	m := &multiTenant{global: global, db: db, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
+	m := &multiTenant{
+		global: global, db: db, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
 		userinfoURL: "https://openidconnect.googleapis.com/v1/userinfo",
-		secure:      strings.HasPrefix(oauth.RedirectURL, "https://")}
+		secure:      strings.HasPrefix(oauth.RedirectURL, "https://"),
+	}
 	m.newStore = func(userID int64) (store.Store, error) {
 		ts, err := m.tokenSource(userID)
 		if err != nil {
@@ -99,7 +101,7 @@ func (m *multiTenant) serveAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ponytail: tenants are cached in-process; a second replica needs shared invalidation.
+// TODO: tenants are cached in-process; a second replica needs shared invalidation.
 func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -189,8 +191,10 @@ func (m *multiTenant) invalidate(userID int64) {
 }
 
 func (m *multiTenant) cookie(name, value string, maxAge int) *http.Cookie {
-	return &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: maxAge,
-		HttpOnly: true, Secure: m.secure, SameSite: http.SameSiteLaxMode}
+	return &http.Cookie{
+		Name: name, Value: value, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, Secure: m.secure, SameSite: http.SameSiteLaxMode,
+	}
 }
 
 func (m *multiTenant) login(w http.ResponseWriter, r *http.Request) {
