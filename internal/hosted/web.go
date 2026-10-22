@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"golang.org/x/oauth2"
+	"google.golang.org/api/googleapi"
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
@@ -150,6 +152,9 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	if err != nil {
 		slog.Error("read tabs", "user", u.id, "service_account", viaSA, "err", err)
 		msg := "could not read that spreadsheet from Google"
+		if gerr, ok := errors.AsType[*googleapi.Error](err); ok {
+			msg += fmt.Sprintf(" (%d: %s)", gerr.Code, gerr.Message)
+		}
 		if viaSA {
 			msg += "; share it with " + m.saEmail + " first"
 		}

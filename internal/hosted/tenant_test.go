@@ -2,6 +2,7 @@ package hosted
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/googleapi"
 )
 
 type fakeStore struct{ tabs map[string][][]any }
@@ -358,5 +360,28 @@ func TestTenantRebuildKeepsLocks(t *testing.T) {
 	}
 	if old == fresh || !old.svc.SharesLocks(fresh.svc) {
 		t.Fatal("rebuilt tenant has its own tab locks")
+	}
+}
+
+// When Google rejects a picked spreadsheet, the dashboard shows Google's status and message.
+func TestAddSheetShowsGoogleError(t *testing.T) {
+	m, srv := newTestHosted(t, errStore{&googleapi.Error{Code: 404, Message: "Requested entity was not found."}})
+	alice := signInAs(t, m, srv, "alice")
+	s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}})
+	if s != 502 || !strings.Contains(body, "(404: Requested entity was not found.)") {
+		t.Errorf("add sheet: %d %s", s, body)
+	}
+}
+
+// A project ID in GOOGLE_PROJECT_NUMBER fails at startup instead of breaking every pick.
+func TestNewRejectsProjectID(t *testing.T) {
+	for k, v := range map[string]string{"SHEETSERVE_BASE_URL": "http://localhost:8080",
+		"SHEETSERVE_SECRET": base64.StdEncoding.EncodeToString(make([]byte, 32)), "GOOGLE_CLIENT_ID": "123-x",
+		"GOOGLE_CLIENT_SECRET": "s", "GOOGLE_PICKER_API_KEY": "k", "GOOGLE_PROJECT_NUMBER": "my-project-512320",
+		"SHEETSERVE_DB": t.TempDir() + "/test.db"} {
+		t.Setenv(k, v)
+	}
+	if _, err := New(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
+		t.Errorf("got %v", err)
 	}
 }

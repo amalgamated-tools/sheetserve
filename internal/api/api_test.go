@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/api/googleapi"
 
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
@@ -394,5 +397,35 @@ func TestCORS(t *testing.T) {
 	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" ||
 		rec.Header().Get("Vary") != "Origin" {
 		t.Errorf("unlisted origin allowed: %d %v", rec.Code, rec.Header())
+	}
+}
+
+// failStore fails every read with err.
+type failStore struct {
+	fakeStore
+	err error
+}
+
+func (f *failStore) Read(context.Context, string, string) ([][]any, error) { return nil, f.err }
+
+// Google's rate limit reaches callers as 429 with Retry-After; other Google errors stay 502.
+func TestGoogleRateLimit(t *testing.T) {
+	cfg := &config.Config{
+		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{"Orders": {Ops: []string{"read"}}}}},
+		Keys:         []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for code, want := range map[int]int{429: 429, 404: 502} {
+		store := &failStore{err: fmt.Errorf("read: %w", &googleapi.Error{Code: code, Message: "nope"})}
+		h := New(cfg, service.New(cfg, store)).Routes()
+		req := httptest.NewRequest("GET", "/v1/shop/Orders", nil)
+		req.Header.Set("Authorization", "Bearer admin-key")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if retry := rec.Header().Get("Retry-After"); rec.Code != want || (want == 429) != (retry == "60") {
+			t.Errorf("Google %d: got %d, Retry-After %q: %s", code, rec.Code, retry, rec.Body)
+		}
 	}
 }

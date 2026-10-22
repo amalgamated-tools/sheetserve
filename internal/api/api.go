@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/api/googleapi"
+
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
@@ -95,6 +97,9 @@ func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 		if err != nil {
 			status, body, reason = errorResponse(err)
 		}
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "60") // Google's read quota is per minute
+		}
 		writeJSON(w, status, body)
 		keyName := ""
 		if key != nil {
@@ -106,10 +111,14 @@ func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 }
 
 // errorResponse hides upstream (Google) error details from callers; they are only logged.
+// Google's rate limit passes through as 429 so clients know to back off.
 func errorResponse(err error) (status int, body any, reason string) {
 	var ae *service.APIError
 	if errors.As(err, &ae) {
 		return ae.Status, map[string]string{"error": ae.Msg}, ae.Msg
+	}
+	if gerr, ok := errors.AsType[*googleapi.Error](err); ok && gerr.Code == http.StatusTooManyRequests {
+		return http.StatusTooManyRequests, map[string]string{"error": "Google Sheets rate limit reached; retry in a minute"}, err.Error()
 	}
 	return http.StatusBadGateway, map[string]string{"error": "upstream error"}, err.Error()
 }
