@@ -3,102 +3,256 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>sheetserve</title>
 <style>
-  body { font: 15px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1.5rem; }
-  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+  :root {
+    --bg: #f6f7f9; --surface: #fff; --text: #1d2128; --muted: #626b78; --border: #dfe3e8;
+    --accent: #1a7f4b; --accent-text: #fff; --accent-soft: #e5f4ec;
+    --danger: #b42318; --danger-soft: #fdecea; --code: #eef0f3; --focus: #2f6fde;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --surface: #1a1e24; --text: #e6e9ee; --muted: #9aa3af; --border: #2d333c;
+      --accent: #3fb57a; --accent-text: #08130d; --accent-soft: #15301f;
+      --danger: #f97066; --danger-soft: #3a1a18; --code: #252a32; --focus: #6b9cf5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  h1, h2, h3 { line-height: 1.25; margin: 0; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .75rem; }
+  h3 { font-size: 1.05rem; }
+  p { margin: .5rem 0; }
+  a { color: var(--accent); }
+  small, .muted { color: var(--muted); }
+  code { font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: .1rem .35rem; border-radius: 4px; word-break: break-all; }
+
+  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .topbar .inner { max-width: 60rem; margin: 0 auto; padding: .75rem 1rem; display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .brand { font-weight: 700; font-size: 1.15rem; display: flex; gap: .5rem; align-items: center; text-decoration: none; color: var(--text); }
+  .brand svg { color: var(--accent); }
+  .who { display: flex; gap: .75rem; align-items: center; color: var(--muted); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .card-head { display: flex; gap: .75rem; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: .5rem; }
+  .card-head > div { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
+  .empty { text-align: center; color: var(--muted); padding: 2rem 1rem; border: 1px dashed var(--border); border-radius: var(--radius); }
+
+  .flash { border-radius: var(--radius); padding: .75rem 1rem; margin: 1rem 0; border: 1px solid; }
+  .flash.error { background: var(--danger-soft); border-color: var(--danger); }
+  .flash.key { background: var(--accent-soft); border-color: var(--accent); }
+  .flash.key .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .35rem 0; }
+
+  button, .button { font: inherit; cursor: pointer; border-radius: 7px; padding: .35rem .8rem; border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; display: inline-flex; align-items: center; gap: .4rem; }
+  button:hover, .button:hover { border-color: var(--muted); }
+  button.primary, .button.primary, button.dirty { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.danger { color: var(--danger); }
+  button.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+  button.small { padding: .15rem .55rem; font-size: .85rem; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  input[type=text], input:not([type]), input[type=url] { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .6rem; min-width: 0; }
+  input::placeholder { color: var(--muted); }
+  label { white-space: nowrap; }
   form.inline { display: inline; }
-  .error { background: #fde8e8; border: 1px solid #f5b5b5; padding: .6rem .8rem; }
-  .key { background: #e8f6ea; border: 1px solid #a6d8ae; padding: .6rem .8rem; }
-  code { background: #f2f2f2; padding: .1rem .3rem; word-break: break-all; }
-  header { display: flex; justify-content: space-between; align-items: baseline; }
-  label { margin-right: .6rem; white-space: nowrap; }
+  .field { display: flex; flex-direction: column; gap: .25rem; margin: .75rem 0; }
+  .field > span { font-weight: 600; font-size: .9rem; }
+  .hint { font-size: .85rem; color: var(--muted); }
+  .actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .75rem; }
+  fieldset { border: 0; padding: 0; margin: .75rem 0; }
+  legend { font-weight: 600; font-size: .9rem; padding: 0; margin-bottom: .35rem; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .chip { display: inline-flex; align-items: center; gap: .3rem; border: 1px solid var(--border); border-radius: 999px; padding: .15rem .65rem; background: var(--bg); font-size: .9rem; cursor: pointer; user-select: none; }
+  .chip input { margin: 0; accent-color: var(--accent); }
+  .chip:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  .badge { font-size: .75rem; font-weight: 600; border-radius: 999px; padding: .05rem .5rem; background: var(--code); color: var(--muted); }
+
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .5rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.right { text-align: right; }
+  td input:not([type=checkbox]) { width: 100%; min-width: 9rem; }
+
+  .login { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
+  .login .card { max-width: 26rem; width: 100%; text-align: center; padding: 2rem; }
+  .login h1 { margin: .75rem 0 .5rem; }
+  .login ul { text-align: left; color: var(--muted); padding-left: 1.2rem; }
+  .login .button { margin-top: 1rem; }
 </style>
 </head>
 <body>
 {{end}}
 
+{{define "logo"}}<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>{{end}}
+
 {{define "login"}}{{template "head"}}
-<h1>sheetserve</h1>
-<p>Serve your Google Sheets as a REST API and an MCP endpoint.</p>
-<p><a href="/login">Sign in with Google</a></p>
+<div class="login">
+  <div class="card">
+    <span class="brand" style="justify-content:center">{{template "logo"}}</span>
+    <h1>sheetserve</h1>
+    <p class="muted">Serve your Google Sheets as a REST API and an MCP endpoint.</p>
+    <ul>
+      <li>Pick spreadsheets from your Drive</li>
+      <li>Choose which tabs allow reads and writes</li>
+      <li>Hand out scoped API keys</li>
+    </ul>
+    <a class="button primary" href="/login">Sign in with Google</a>
+  </div>
+</div>
 </body></html>
 {{end}}
 
 {{define "app"}}{{template "head"}}
-<header>
-  <h1>sheetserve</h1>
-  <form class="inline" method="post" action="/logout">{{.Email}} <button>Sign out</button></form>
-</header>
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-{{if .NewKey}}<p class="key">New key: <code>{{.NewKey}}</code><br>Copy it now. It is not stored and won't be shown again.</p>{{end}}
+<div class="topbar"><div class="inner">
+  <a class="brand" href="/">{{template "logo"}} sheetserve</a>
+  <form class="who" method="post" action="/logout"><span>{{.Email}}</span> <button class="small">Sign out</button></form>
+</div></div>
+<main>
+<div id="flash">
+{{if .Error}}<p class="flash error" role="alert">{{.Error}}</p>{{end}}
+{{if .NewKey}}<div class="flash key" role="status">
+  <strong>New key created.</strong>
+  <div class="row"><code id="new-key">{{.NewKey}}</code> <button class="small" type="button" data-copy="#new-key">Copy</button></div>
+  <span class="hint">Copy it now. It is not stored and won't be shown again.</span>
+</div>{{end}}
+</div>
 
 <h2>Spreadsheets</h2>
 {{range .Sheets}}{{$sheet := .Name}}
-<h3>{{.Name}} <small>({{.Title}}{{if .ServiceAccount}}, via service account{{end}})</small>
-  <form class="inline" method="post" action="/app/sheets/delete"><input type="hidden" name="name" value="{{.Name}}"><button>Remove</button></form>
-</h3>
-<p>URL: <code>/v1/{{.Name}}/&lt;tab&gt;</code>. Each tab needs a header row with an <code>id</code> column.</p>
-<table>
-  <tr><th>Tab</th><th>Allowed ops</th><th>Hidden columns</th><th></th></tr>
-  {{range $i, $t := .Tabs}}{{$f := printf "tab-%s-%d" $sheet $i}}
-  <tr>
-    <td>{{.Name}}</td>
-    <td>{{range $.AllOps}}<label><input type="checkbox" form="{{$f}}" name="ops" value="{{.}}"{{if has $t.Ops .}} checked{{end}}> {{.}}</label>{{end}}</td>
-    <td><input form="{{$f}}" name="hidden" value="{{.Hidden}}" placeholder="cost, notes"></td>
-    <td><form id="{{$f}}" method="post" action="/app/tabs">
-      <input type="hidden" name="sheet" value="{{$sheet}}"><input type="hidden" name="tab" value="{{.Name}}">
-      <button>Save</button>
-    </form></td>
-  </tr>
-  {{end}}
-</table>
-{{else}}<p>No spreadsheets yet.</p>{{end}}
+<section class="card">
+  <div class="card-head">
+    <div><h3>{{.Name}}</h3> <small>{{.Title}}</small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
+    <form class="inline" method="post" action="/app/sheets/delete" data-confirm="Remove {{.Name}}? Keys scoped to it stop working.">
+      <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Remove</button>
+    </form>
+  </div>
+  <p class="hint">Endpoint: <code><span class="origin"></span>/v1/{{.Name}}/&lt;tab&gt;</code>. Each tab needs a header row with an <code>id</code> column.</p>
+  {{if .Tabs}}
+  <div class="table-wrap"><table>
+    <tr><th>Tab</th><th>Allowed ops</th><th>Hidden columns</th><th></th></tr>
+    {{range $i, $t := .Tabs}}{{$f := printf "tab-%s-%d" $sheet $i}}
+    <tr>
+      <td><strong>{{.Name}}</strong></td>
+      <td><div class="chips">{{range $.AllOps}}<label class="chip"><input type="checkbox" form="{{$f}}" name="ops" value="{{.}}"{{if has $t.Ops .}} checked{{end}}> {{.}}</label>{{end}}</div></td>
+      <td><input form="{{$f}}" name="hidden" value="{{.Hidden}}" placeholder="cost, notes" aria-label="Hidden columns for {{.Name}}"></td>
+      <td class="right"><form id="{{$f}}" class="tab-form" method="post" action="/app/tabs">
+        <input type="hidden" name="sheet" value="{{$sheet}}"><input type="hidden" name="tab" value="{{.Name}}">
+        <button>Save</button>
+      </form></td>
+    </tr>
+    {{end}}
+  </table></div>
+  {{else}}<p class="muted">No tabs found.</p>{{end}}
+</section>
+{{else}}<div class="empty">No spreadsheets yet. Add one from your Google Drive to get started.</div>{{end}}
 
-<p><button id="pick">Add a spreadsheet from Google Drive</button></p>
-<form id="add" method="post" action="/app/sheets" hidden>
-  <input type="hidden" name="google_id"><input type="hidden" name="title">
-  <label>Name in URLs <input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
-  <button>Add</button>
-</form>
-{{if .SAEmail}}
-<form method="post" action="/app/sheets">
-  <p>Or share a spreadsheet with <code>{{.SAEmail}}</code> (Viewer to read, Editor to write) and add it by URL.
-  The server then reaches it with its service account, so its keys don't depend on your Google sign-in.</p>
-  <input type="hidden" name="via" value="service_account">
-  <label>URL <input name="url" placeholder="https://docs.google.com/spreadsheets/d/…" size="40" required></label>
-  <label>Name in URLs <input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
-  <button>Add by URL</button>
-</form>
-{{end}}
+<section class="card">
+  <h3>Add a spreadsheet</h3>
+  <div class="actions"><button id="pick" class="primary" type="button">Choose from Google Drive</button></div>
+  <form id="add" method="post" action="/app/sheets" hidden>
+    <input type="hidden" name="google_id"><input type="hidden" name="title">
+    <p>Adding <strong id="picked"></strong></p>
+    <label class="field"><span>Name in URLs</span><input name="name" pattern="[A-Za-z0-9_\-]+" required>
+      <span class="hint">Letters, digits, - or _. Used in <code>/v1/&lt;name&gt;/&lt;tab&gt;</code> and in key scopes.</span></label>
+    <div class="actions"><button class="primary">Add</button> <button type="button" id="add-cancel">Cancel</button></div>
+  </form>
+  {{if .SAEmail}}
+  <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">
+  <form method="post" action="/app/sheets">
+    <p>Or share a spreadsheet with <code>{{.SAEmail}}</code> (Viewer to read, Editor to write) and add it by URL.
+    The server then reaches it with its service account, so its keys don't depend on your Google sign-in.</p>
+    <input type="hidden" name="via" value="service_account">
+    <label class="field"><span>Spreadsheet URL</span><input type="url" name="url" placeholder="https://docs.google.com/spreadsheets/d/…" required></label>
+    <label class="field"><span>Name in URLs</span><input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
+    <div class="actions"><button>Add by URL</button></div>
+  </form>
+  {{end}}
+</section>
 
 <h2>API keys</h2>
 {{if .Keys}}
-<table>
+<section class="card"><div class="table-wrap"><table>
   <tr><th>Name</th><th>Tabs</th><th>Ops</th><th></th></tr>
   {{range .Keys}}
-  <tr><td>{{.Name}}</td><td>{{.Tabs}}</td><td>{{.Ops}}</td>
-    <td><form class="inline" method="post" action="/app/keys/delete"><input type="hidden" name="name" value="{{.Name}}"><button>Revoke</button></form></td></tr>
+  <tr><td><strong>{{.Name}}</strong></td><td><code>{{.Tabs}}</code></td><td>{{.Ops}}</td>
+    <td class="right"><form class="inline" method="post" action="/app/keys/delete" data-confirm="Revoke {{.Name}}? Clients using it will get 401.">
+      <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Revoke</button></form></td></tr>
   {{end}}
-</table>
-{{else}}<p>No keys yet.</p>{{end}}
+</table></div></section>
+{{else}}<div class="empty">No keys yet.</div>{{end}}
 
-<h3>New key</h3>
-<form method="post" action="/app/keys">
-  <p><label>Name <input name="name" required></label></p>
-  <p>Tabs: {{range .TabSpecs}}<label><input type="checkbox" name="tabs" value="{{.}}"> {{.}}</label> {{end}}</p>
-  <p>Limit to ops (optional): {{range .AllOps}}<label><input type="checkbox" name="ops" value="{{.}}"> {{.}}</label>{{end}}</p>
-  <button>Create key</button>
-</form>
-<p>Use a key as <code>Authorization: Bearer &lt;key&gt;</code> on <code>/v1/…</code>, <code>/mcp</code> and <code>/openapi.json</code>.</p>
+<section class="card">
+  <h3>New key</h3>
+  {{if .Sheets}}
+  <form method="post" action="/app/keys">
+    <label class="field"><span>Name</span><input name="name" required placeholder="e.g. website, agent"></label>
+    <fieldset><legend>Tabs</legend>
+      <div class="chips">{{range .TabSpecs}}<label class="chip"><input type="checkbox" name="tabs" value="{{.}}"> {{if eq . "*"}}everything{{else}}{{.}}{{end}}</label>{{end}}</div>
+    </fieldset>
+    <fieldset><legend>Limit to ops <span class="hint">(optional; otherwise whatever each tab allows)</span></legend>
+      <div class="chips">{{range .AllOps}}<label class="chip"><input type="checkbox" name="ops" value="{{.}}"> {{.}}</label>{{end}}</div>
+    </fieldset>
+    <div class="actions"><button class="primary">Create key</button></div>
+  </form>
+  {{else}}<p class="muted">Add a spreadsheet first, then create a key for its tabs.</p>{{end}}
+</section>
+
+<h2>Using a key</h2>
+<section class="card">
+  <p>Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
+  <div class="table-wrap"><table>
+    <tr><td>REST</td><td><code><span class="origin"></span>/v1/&lt;sheet&gt;/&lt;tab&gt;</code></td></tr>
+    <tr><td>MCP</td><td><code id="mcp-url"><span class="origin"></span>/mcp</code> <button class="small" type="button" data-copy="#mcp-url">Copy</button></td></tr>
+    <tr><td>OpenAPI</td><td><code><span class="origin"></span>/openapi.json</code> <span class="hint">covers the tabs the key can reach</span></td></tr>
+  </table></div>
+</section>
+</main>
 
 <script src="https://apis.google.com/js/api.js"></script>
 <script>
-document.getElementById("pick").onclick = async () => {
+const flash = document.getElementById("flash");
+function showError(msg) {
+  const p = document.createElement("p");
+  p.className = "flash error"; p.setAttribute("role", "alert"); p.textContent = msg;
+  flash.replaceChildren(p);
+  p.scrollIntoView({ block: "nearest" });
+}
+
+document.querySelectorAll(".origin").forEach((el) => { el.textContent = location.origin; });
+
+document.querySelectorAll("[data-copy]").forEach((btn) => {
+  btn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+    } catch { showError("Could not copy; select the text and copy it instead."); }
+  };
+});
+
+document.querySelectorAll("form[data-confirm]").forEach((f) => {
+  f.onsubmit = (e) => { if (!confirm(f.dataset.confirm)) e.preventDefault(); };
+});
+
+// A tab row's Save button lights up once its ops or hidden columns change.
+document.querySelectorAll("form.tab-form").forEach((f) => {
+  const button = f.querySelector("button");
+  for (const input of f.elements) input.addEventListener("input", () => button.classList.add("dirty"));
+});
+
+const add = document.getElementById("add"), pick = document.getElementById("pick");
+document.getElementById("add-cancel").onclick = () => { add.hidden = true; pick.hidden = false; };
+
+pick.onclick = async () => {
   const res = await fetch("/app/token");
   const body = await res.json();
-  if (!res.ok) { alert(body.error); return; }
+  if (!res.ok) { showError(body.error); return; }
   gapi.load("picker", () => {
     new google.picker.PickerBuilder()
       .addView(new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS))
@@ -107,12 +261,14 @@ document.getElementById("pick").onclick = async () => {
       .setAppId({{.AppID}})
       .setCallback((data) => {
         if (data.action !== google.picker.Action.PICKED) return;
-        const doc = data.docs[0], form = document.getElementById("add");
-        form.google_id.value = doc.id;
-        form.title.value = doc.name;
-        form.name.value = doc.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
-        form.hidden = false;
-        form.name.focus();
+        const doc = data.docs[0];
+        add.google_id.value = doc.id;
+        add.title.value = doc.name;
+        add.name.value = doc.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+        document.getElementById("picked").textContent = doc.name;
+        add.hidden = false;
+        pick.hidden = true;
+        add.name.focus();
       })
       .build()
       .setVisible(true);
