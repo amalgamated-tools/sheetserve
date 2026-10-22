@@ -183,7 +183,7 @@ func (m *multiTenant) deleteSheet(w http.ResponseWriter, r *http.Request, u user
 	})
 }
 
-// ponytail: hidden columns are free text; read the header row to offer checkboxes if typos bite.
+// TODO: hidden columns are free text; read the header row to offer checkboxes if typos bite.
 func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 	if err := r.ParseForm(); err != nil {
 		m.render(w, r, u, page{Error: "could not read the form"}, http.StatusBadRequest)

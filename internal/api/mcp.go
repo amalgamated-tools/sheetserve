@@ -31,7 +31,7 @@ func (a *API) mcpHandler() http.Handler {
 	})
 }
 
-// ponytail: the server is rebuilt per request (stateless mode), reading each tab's header from
+// TODO: the server is rebuilt per request (stateless mode), reading each tab's header from
 // the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
 func (a *API) mcpServer(ctx context.Context, key *config.Key) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: Version}, nil)
@@ -94,22 +94,27 @@ func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab str
 	for _, op := range ops {
 		switch op {
 		case "read":
-			filter := map[string]any{"type": "object", "properties": map[string]any{},
-				"additionalProperties": map[string]any{"type": "string"}}
+			filter := map[string]any{
+				"type": "object", "properties": map[string]any{},
+				"additionalProperties": map[string]any{"type": "string"},
+			}
 			for _, c := range cols {
 				filter["properties"].(map[string]any)[c] = map[string]any{"type": "string"}
 			}
 			addTool(srv, key, name+"_list", "List rows in "+where+". A filter key \"col\" matches exactly; \"col[op]\" uses op, one of "+
 				strings.Join(service.FilterOperators(), ", ")+". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case. "+
 				"sort is a column name, prefixed with - for descending.",
-				object(map[string]any{"filter": filter, "sort": map[string]any{"type": "string"},
-					"limit": map[string]any{"type": "integer"}, "offset": map[string]any{"type": "integer"}}),
+				object(map[string]any{
+					"filter": filter, "sort": map[string]any{"type": "string"},
+					"limit": map[string]any{"type": "integer"}, "offset": map[string]any{"type": "integer"},
+				}),
 				func(ctx context.Context, in struct {
 					Filter map[string]string `json:"filter"`
 					Sort   string            `json:"sort"`
 					Limit  int               `json:"limit"`
 					Offset int               `json:"offset"`
-				}) (any, error) {
+				},
+				) (any, error) {
 					return a.svc.List(ctx, sheet, tab, in.Filter, in.Sort, in.Limit, in.Offset)
 				})
 			addTool(srv, key, name+"_get", "Get one row in "+where+" by id.", idSchema,
@@ -123,7 +128,8 @@ func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab str
 				func(ctx context.Context, in struct {
 					ID     string         `json:"id"`
 					Fields map[string]any `json:"fields"`
-				}) (any, error) {
+				},
+				) (any, error) {
 					return a.svc.Update(ctx, sheet, tab, in.ID, in.Fields)
 				})
 		case "delete":

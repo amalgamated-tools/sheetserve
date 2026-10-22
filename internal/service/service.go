@@ -58,7 +58,7 @@ func (s *Service) Tabs(ctx context.Context, spreadsheetID string) ([]string, err
 	return s.store.Tabs(ctx, spreadsheetID)
 }
 
-// ponytail: in-process cache and locks; a second replica needs Redis + a distributed lock.
+// TODO: in-process cache and locks; a second replica needs Redis + a distributed lock.
 func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snapshot, error) {
 	k := sheet + "/" + tab
 	if !fresh && s.cfg.CacheTTL > 0 {
@@ -319,7 +319,7 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 	return s.toObject(snap, row, sheet, tab), nil
 }
 
-// ponytail: rows are located by id just before writing; a human inserting/deleting rows in the
+// TODO: rows are located by id just before writing; a human inserting/deleting rows in the
 // sheet during that window can shift the target row. Fine for API-owned tabs.
 func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[string]any) (map[string]any, error) {
 	if len(fields) == 0 {
