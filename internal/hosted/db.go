@@ -6,11 +6,14 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
 	"github.com/amalgamated-tools/sheetserve/internal/config"
@@ -23,44 +26,8 @@ type DB struct {
 	aead cipher.AEAD // encrypts refresh tokens at rest
 }
 
-// ponytail: no migration tool; schema changes need one.
-const schema = `
-CREATE TABLE IF NOT EXISTS users (
-	id INTEGER PRIMARY KEY,
-	google_sub TEXT NOT NULL UNIQUE,
-	email TEXT NOT NULL,
-	refresh_token BLOB
-);
-CREATE TABLE IF NOT EXISTS sessions (
-	token_hash TEXT PRIMARY KEY,
-	user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-	expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS spreadsheets (
-	user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-	name TEXT NOT NULL,
-	google_id TEXT NOT NULL,
-	title TEXT NOT NULL,
-	service_account INTEGER NOT NULL DEFAULT 0, -- 1: reached with the server's service account
-	PRIMARY KEY (user_id, name)
-);
-CREATE TABLE IF NOT EXISTS tabs (
-	user_id INTEGER NOT NULL,
-	sheet TEXT NOT NULL,
-	tab TEXT NOT NULL,
-	ops TEXT NOT NULL,    -- JSON array
-	hidden TEXT NOT NULL, -- JSON array
-	PRIMARY KEY (user_id, sheet, tab),
-	FOREIGN KEY (user_id, sheet) REFERENCES spreadsheets ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS api_keys (
-	hash TEXT PRIMARY KEY,
-	user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-	name TEXT NOT NULL,
-	tabs TEXT NOT NULL, -- JSON array
-	ops TEXT NOT NULL,  -- JSON array
-	UNIQUE (user_id, name)
-);`
+//go:embed migrations/*.sql
+var migrations embed.FS
 
 // openDB opens (creating if needed) the SQLite file at path. secret is the 32-byte AES key for refresh tokens.
 func openDB(path string, secret []byte) (*DB, error) {
@@ -78,23 +45,24 @@ func openDB(path string, secret []byte) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := initSchema(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("init %s: %w", path, err)
 	}
 	return &DB{db, aead}, nil
 }
 
-func initSchema(db *sql.DB) error {
-	if _, err := db.Exec(schema); err != nil {
+// migrate applies any migrations in migrations/ that db has not run yet. Add one with `mise run db:new <name>`.
+func migrate(ctx context.Context, db *sql.DB) error {
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
 		return err
 	}
-	// Databases made before service account support lack this column.
-	var has bool
-	if err := db.QueryRow(`SELECT count(*) > 0 FROM pragma_table_info('spreadsheets') WHERE name = 'service_account'`).Scan(&has); err != nil || has {
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
 		return err
 	}
-	_, err := db.Exec(`ALTER TABLE spreadsheets ADD COLUMN service_account INTEGER NOT NULL DEFAULT 0`)
+	_, err = p.Up(ctx)
 	return err
 }
 

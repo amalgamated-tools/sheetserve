@@ -1,6 +1,8 @@
 [tools]
 go = "1.27.2"
 golangci-lint = "2.14.0"
+# Same version as go.mod, for creating migrations.
+"go:github.com/pressly/goose/v3/cmd/goose" = "3.28.0"
 
 [env]
 # Local settings and secrets. Copy .env.example to .env.
@@ -43,6 +45,11 @@ run = "go vet ./..."
 [tasks.tidy]
 description = "Tidy go.mod and go.sum"
 run = "go mod tidy"
+
+[tasks."db:new"]
+description = "Create a new SQL migration in internal/hosted/migrations"
+usage = 'arg "<name>" help="Migration name, such as add_roles"'
+run = 'goose -dir internal/hosted/migrations -s create "$usage_name" sql'
 
 [tasks.check]
 description = "Run vet, lint and tests"

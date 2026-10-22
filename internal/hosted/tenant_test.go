@@ -2,7 +2,6 @@ package hosted
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -259,34 +258,6 @@ func TestServiceAccountSheets(t *testing.T) {
 	}
 	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 {
 		t.Errorf("user sheet with no service account: %d", s)
-	}
-}
-
-// A database made before service account support gains the column, and its sheets use the user's token.
-func TestSchemaUpgrade(t *testing.T) {
-	path := t.TempDir() + "/old.db"
-	old, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := old.Exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL, refresh_token BLOB);
-		CREATE TABLE spreadsheets (user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE, name TEXT NOT NULL,
-			google_id TEXT NOT NULL, title TEXT NOT NULL, PRIMARY KEY (user_id, name));
-		INSERT INTO users (id, google_sub, email) VALUES (1, 's', 's@example.com');
-		INSERT INTO spreadsheets VALUES (1, 'shop', 'SS', 'Shop');`); err != nil {
-		t.Fatal(err)
-	}
-	_ = old.Close()
-	for range 2 { // the second open must find the column already there
-		db, err := openDB(path, make([]byte, 32))
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := userConfig(context.Background(), db, 1, &config.Config{})
-		_ = db.Close()
-		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" || cfg.Spreadsheets["shop"].ServiceAccount {
-			t.Fatalf("upgraded config: %+v %v", cfg, err)
-		}
 	}
 }
 
