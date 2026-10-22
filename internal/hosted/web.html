@@ -154,7 +154,10 @@
 
 <section class="card">
   <h3>Add a spreadsheet</h3>
-  <div class="actions"><button id="pick" class="primary" type="button">Choose from Google Drive</button></div>
+  <div id="pick-area">
+    <div class="actions"><button id="pick" class="primary" type="button">Choose from Google Drive</button></div>
+    <p class="hint">If the picker asks you to sign in, allow docs.google.com in your tracker blocker (such as Privacy Badger) or allow third-party cookies for this site.</p>
+  </div>
   <form id="add" method="post" action="/app/sheets" hidden>
     <input type="hidden" name="google_id"><input type="hidden" name="title">
     <p>Adding <strong id="picked"></strong></p>
@@ -246,8 +249,8 @@ document.querySelectorAll("form.tab-form").forEach((f) => {
   for (const input of f.elements) input.addEventListener("input", () => button.classList.add("dirty"));
 });
 
-const add = document.getElementById("add"), pick = document.getElementById("pick");
-document.getElementById("add-cancel").onclick = () => { add.hidden = true; pick.hidden = false; };
+const add = document.getElementById("add"), pick = document.getElementById("pick"), pickArea = document.getElementById("pick-area");
+document.getElementById("add-cancel").onclick = () => { add.hidden = true; pickArea.hidden = false; };
 
 pick.onclick = async () => {
   const res = await fetch("/app/token");
@@ -267,7 +270,7 @@ pick.onclick = async () => {
         add.name.value = doc.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
         document.getElementById("picked").textContent = doc.name;
         add.hidden = false;
-        pick.hidden = true;
+        pickArea.hidden = true;
         add.name.focus();
       })
       .build()
