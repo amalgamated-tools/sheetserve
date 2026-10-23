@@ -14,7 +14,6 @@ import (
 
 var AllOps = []string{"read", "create", "update", "delete"}
 
-// Config is one user's spreadsheets and keys, plus the server-wide settings from FromEnv.
 type Config struct {
 	Listen       string
 	CacheTTL     time.Duration
