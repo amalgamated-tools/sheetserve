@@ -4,12 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
@@ -17,13 +15,12 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
-	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
+	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
 )
 
-// multiTenant serves the app: users sign in with Google, and each user's API keys reach an *API
-// built from that user's rows in the database. It calls Google with that user's credentials, or
-// with the server's service account for spreadsheets added that way.
+// multiTenant serves the app: users sign in with Google and manage their spreadsheets and keys on
+// the dashboard, and tenants serves each user's API to their keys.
 type multiTenant struct {
 	global      *config.Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from db
 	db          *db.DB
@@ -32,27 +29,17 @@ type multiTenant struct {
 	secure      bool   // set Secure on cookies (base URL is https)
 	pickerKey   string // browser API key for Google Picker
 	appID       string // Cloud project number, so picked files are granted to this app
-	newStore    func(userID int64) (store.Store, error)
-	saStore     store.Store // the server's service account; nil when none is configured
-	saEmail     string      // the address users share spreadsheets with for saStore
-
-	mu      sync.Mutex
-	tenants map[int64]*tenant
-	locks   map[int64]*sync.Map // per-user tab write locks; outlive tenant rebuilds
-}
-
-type tenant struct {
-	h   http.Handler
-	svc *service.Service
+	tenants     *tenancy.Tenants
+	saEmail     string // the address users share spreadsheets with for tenants.SAStore
 }
 
 func newMultiTenant(global *config.Config, d *db.DB, oauth *oauth2.Config) *multiTenant {
 	m := &multiTenant{
-		global: global, db: d, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
+		global: global, db: d, oauth: oauth, tenants: &tenancy.Tenants{DB: d, Global: global},
 		userinfoURL: "https://openidconnect.googleapis.com/v1/userinfo",
 		secure:      strings.HasPrefix(oauth.RedirectURL, "https://"),
 	}
-	m.newStore = func(userID int64) (store.Store, error) {
+	m.tenants.NewStore = func(userID int64) (store.Store, error) {
 		ts, err := m.tokenSource(userID)
 		if err != nil {
 			return nil, err
@@ -75,116 +62,11 @@ func (m *multiTenant) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /login", m.login)
 	mux.HandleFunc("GET /auth/callback", m.callback)
-	apiHandler := http.HandlerFunc(m.serveAPI)
-	mux.Handle("/v1/", apiHandler)
-	mux.Handle("/mcp", apiHandler)
-	mux.Handle("GET /openapi.json", apiHandler)
+	mux.Handle("/v1/", m.tenants)
+	mux.Handle("/mcp", m.tenants)
+	mux.Handle("GET /openapi.json", m.tenants)
 	mux.Handle("/", http.NewCrossOriginProtection().Handler(m.web()))
 	return api.CORS(m.global, mux)
-}
-
-// serveAPI hands the request to the API of the user who owns the bearer key.
-func (m *multiTenant) serveAPI(w http.ResponseWriter, r *http.Request) {
-	userID, ok, err := m.db.KeyUser(r.Context(), config.HashKey(api.Bearer(r)))
-	var t *tenant
-	if err == nil && ok {
-		t, err = m.tenant(r.Context(), userID)
-	}
-	switch {
-	case err != nil:
-		slog.Error("tenant", "user", userID, "err", err)
-		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream error"})
-	case !ok:
-		api.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
-	default:
-		t.h.ServeHTTP(w, r)
-	}
-}
-
-// TODO: tenants are cached in-process; a second replica needs shared invalidation.
-func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if t, ok := m.tenants[userID]; ok {
-		return t, nil
-	}
-	cfg, err := m.db.UserConfig(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Listen, cfg.CacheTTL, cfg.CORSOrigins = m.global.Listen, m.global.CacheTTL, m.global.CORSOrigins
-	rs := routedStore{sa: m.saStore, viaSA: map[string]bool{}}
-	// Without the user's token, their service account spreadsheets still work.
-	if rs.user, err = m.newStore(userID); err != nil {
-		rs.user = errStore{err}
-	}
-	if rs.sa == nil {
-		rs.sa = errStore{errors.New("spreadsheet needs the service account, but the server has none configured")}
-	}
-	for _, ss := range cfg.Spreadsheets {
-		if ss.ServiceAccount {
-			rs.viaSA[ss.ID] = true
-		}
-	}
-	svc := service.New(cfg, rs)
-	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
-	if m.locks[userID] == nil {
-		m.locks[userID] = &sync.Map{}
-	}
-	svc.UseLocks(m.locks[userID])
-	t := &tenant{api.New(cfg, svc).Mux(), svc}
-	m.tenants[userID] = t
-	return t, nil
-}
-
-// routedStore sends each spreadsheet to the user's credentials or the service account. If a user
-// added one spreadsheet both ways, the service account serves both, since it was checked on add.
-type routedStore struct {
-	user, sa store.Store
-	viaSA    map[string]bool // Google spreadsheet ids
-}
-
-func (r routedStore) pick(id string) store.Store {
-	if r.viaSA[id] {
-		return r.sa
-	}
-	return r.user
-}
-
-func (r routedStore) Read(ctx context.Context, id, tab string) ([][]any, error) {
-	return r.pick(id).Read(ctx, id, tab)
-}
-
-func (r routedStore) Append(ctx context.Context, id, tab string, row []any) error {
-	return r.pick(id).Append(ctx, id, tab, row)
-}
-
-func (r routedStore) SetCells(ctx context.Context, id, tab string, row int, cells map[int]any) error {
-	return r.pick(id).SetCells(ctx, id, tab, row, cells)
-}
-
-func (r routedStore) DeleteRow(ctx context.Context, id, tab string, row int) error {
-	return r.pick(id).DeleteRow(ctx, id, tab, row)
-}
-
-func (r routedStore) Tabs(ctx context.Context, id string) ([]string, error) {
-	return r.pick(id).Tabs(ctx, id)
-}
-
-// errStore fails every call; it stands in for credentials the server can't use.
-type errStore struct{ err error }
-
-func (e errStore) Read(context.Context, string, string) ([][]any, error)            { return nil, e.err }
-func (e errStore) Append(context.Context, string, string, []any) error              { return e.err }
-func (e errStore) SetCells(context.Context, string, string, int, map[int]any) error { return e.err }
-func (e errStore) DeleteRow(context.Context, string, string, int) error             { return e.err }
-func (e errStore) Tabs(context.Context, string) ([]string, error)                   { return nil, e.err }
-
-// invalidate drops userID's cached API so the next request sees their latest settings and token.
-func (m *multiTenant) invalidate(userID int64) {
-	m.mu.Lock()
-	delete(m.tenants, userID)
-	m.mu.Unlock()
 }
 
 func (m *multiTenant) cookie(name, value string, maxAge int) *http.Cookie {
@@ -228,7 +110,7 @@ func (m *multiTenant) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in failed", http.StatusInternalServerError)
 		return
 	}
-	m.invalidate(userID) // pick up the new refresh token
+	m.tenants.Invalidate(userID) // pick up the new refresh token
 	http.SetCookie(w, m.cookie("session", sess, int(db.SessionTTL.Seconds())))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

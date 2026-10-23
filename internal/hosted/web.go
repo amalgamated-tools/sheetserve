@@ -164,7 +164,7 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	name, gid, title := r.FormValue("name"), r.FormValue("google_id"), r.FormValue("title")
 	viaSA := r.FormValue("via") == "service_account"
 	if viaSA {
-		if m.saStore == nil {
+		if m.tenants.SAStore == nil {
 			m.render(w, r, u, page{Path: sheetsPage, Error: "this server has no service account"}, http.StatusBadRequest)
 			return
 		}
@@ -181,11 +181,11 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	var tabs []string
 	var err error
 	if viaSA {
-		tabs, err = m.saStore.Tabs(r.Context(), gid)
+		tabs, err = m.tenants.SAStore.Tabs(r.Context(), gid)
 	} else {
-		var t *tenant
-		if t, err = m.tenant(r.Context(), u.id); err == nil {
-			tabs, err = t.svc.Tabs(r.Context(), gid)
+		var svc *service.Service
+		if svc, err = m.tenants.Service(r.Context(), u.id); err == nil {
+			tabs, err = svc.Tabs(r.Context(), gid)
 		}
 	}
 	if err != nil {
@@ -255,7 +255,7 @@ func (m *multiTenant) createSheet(w http.ResponseWriter, r *http.Request, u user
 
 // create makes a spreadsheet with the user's own credentials, so it lands in their Drive.
 func (m *multiTenant) create(ctx context.Context, userID int64, title string, tabs []store.Tab) (string, error) {
-	st, err := m.newStore(userID)
+	st, err := m.tenants.NewStore(userID)
 	if err != nil {
 		return "", err
 	}
@@ -336,10 +336,10 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 
 // checkKey reads the tab's header from Google and returns why key can't be its key column, or "".
 func (m *multiTenant) checkKey(ctx context.Context, userID int64, sheet, tab, key string) string {
-	t, err := m.tenant(ctx, userID)
+	svc, err := m.tenants.Service(ctx, userID)
 	var header []string
 	if err == nil {
-		header, err = t.svc.Header(ctx, sheet, tab)
+		header, err = svc.Header(ctx, sheet, tab)
 	}
 	switch {
 	case err != nil:
@@ -368,7 +368,7 @@ func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) 
 		m.render(w, r, u, page{Path: keysPage, Error: userMessage(err)}, http.StatusBadRequest)
 		return
 	}
-	m.invalidate(u.id)
+	m.tenants.Invalidate(u.id)
 	m.render(w, r, u, page{Path: keysPage, NewKey: key}, http.StatusOK)
 }
 
@@ -384,7 +384,7 @@ func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, to 
 		m.render(w, r, u, page{Path: path, Error: userMessage(err)}, http.StatusBadRequest)
 		return
 	}
-	m.invalidate(u.id)
+	m.tenants.Invalidate(u.id)
 	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
