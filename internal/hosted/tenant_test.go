@@ -21,7 +21,23 @@ import (
 	"google.golang.org/api/googleapi"
 )
 
-type fakeStore struct{ tabs map[string][][]any }
+type fakeStore struct {
+	tabs    map[string][][]any
+	created int // Create calls
+}
+
+func (f *fakeStore) Create(_ context.Context, title string, tabs []store.Tab) (string, error) {
+	f.created++
+	id := "new-" + title
+	for _, t := range tabs {
+		var header []any
+		for _, c := range t.Columns {
+			header = append(header, c)
+		}
+		f.tabs[id+"/"+t.Name] = [][]any{header}
+	}
+	return id, nil
+}
 
 func (f *fakeStore) Read(_ context.Context, id, tab string) ([][]any, error) {
 	return f.tabs[id+"/"+tab], nil
@@ -383,5 +399,70 @@ func TestNewRejectsProjectID(t *testing.T) {
 	}
 	if _, err := New(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// A blank spreadsheet is created from a schema and served like a picked one. A taken name is
+// refused before anything is created in Drive, and a bad schema comes back for editing.
+func TestCreateSheet(t *testing.T) {
+	fs := &fakeStore{tabs: map[string][][]any{}}
+	m, srv := newTestHosted(t, fs)
+	alice := signInAs(t, m, srv, "alice")
+
+	form := url.Values{"name": {"shop"}, "schema": {"Orders: item, qty\n\nNotes"}}
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 303 {
+		t.Fatalf("create sheet: %d %s", s, body)
+	}
+	if got := fs.tabs["new-shop/Orders"]; !slices.Equal(got[0], []any{"id", "item", "qty"}) {
+		t.Errorf("Orders header: %v", got)
+	}
+	if got := fs.tabs["new-shop/Notes"]; !slices.Equal(got[0], []any{"id"}) {
+		t.Errorf("Notes header: %v", got)
+	}
+	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}); s != 303 {
+		t.Fatalf("save tab: %d %s", s, body)
+	}
+	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}})
+	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/shop/Orders", strings.NewReader(`{"item":"mug","qty":2}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	if s, body := send(t, browser(t), req); s != 201 {
+		t.Errorf("create row: %d %s", s, body)
+	}
+
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 400 || !strings.Contains(body, "already in use") || fs.created != 1 {
+		t.Errorf("taken name: %d, %d creates: %s", s, fs.created, body)
+	}
+	bad := url.Values{"name": {"other"}, "schema": {"Orders: a, a"}}
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) || !strings.Contains(body, ">Orders: a, a</textarea>") {
+		t.Errorf("bad schema: %d %s", s, body)
+	}
+}
+
+// Without a store that can create spreadsheets, the dashboard says so instead of saving a sheet.
+func TestCreateSheetUnsupported(t *testing.T) {
+	m, srv := newTestHosted(t, errStore{errors.New("unused")})
+	alice := signInAs(t, m, srv, "alice")
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}); s != 502 || !strings.Contains(body, "could not create") {
+		t.Errorf("create sheet: %d %s", s, body)
+	}
+}
+
+func TestParseSchema(t *testing.T) {
+	tabs, err := parseSchema(" Orders : item,  qty ,\r\nPeople: id, name\n\n")
+	want := []store.Tab{{Name: "Orders", Columns: []string{"id", "item", "qty"}}, {Name: "People", Columns: []string{"id", "name"}}}
+	if err != nil || !slices.EqualFunc(tabs, want, func(a, b store.Tab) bool { return a.Name == b.Name && slices.Equal(a.Columns, b.Columns) }) {
+		t.Errorf("parseSchema: %v, %v", tabs, err)
+	}
+	for in, msg := range map[string]string{
+		"":                     "at least one tab",
+		": item":               "tab name missing",
+		"a/b: item":            "must not contain /",
+		"Orders\norders: item": "listed twice",
+		"Orders: qty, qty":     "listed twice",
+	} {
+		if _, err := parseSchema(in); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("parseSchema(%q): %v, want %q", in, err, msg)
+		}
 	}
 }
