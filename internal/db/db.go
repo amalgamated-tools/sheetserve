@@ -1,6 +1,7 @@
 package db
 
 import (
+	"cmp"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -144,15 +146,131 @@ func (d *DB) KeyUser(ctx context.Context, hash string) (id int64, ok bool, err e
 	return id, err == nil, err
 }
 
-type Querier interface {
+// Spreadsheet is a spreadsheet a user added, with its tabs in the order Google listed them.
+type Spreadsheet struct {
+	Name, Title    string
+	GoogleID       string
+	ServiceAccount bool // reached with the server's service account, not the owner's Google token
+	Tabs           []string
+}
+
+// UserConfig builds userID's spreadsheets and keys into a validated Config. The server-wide
+// settings (listen, cache_ttl, cors_origins) are left for the caller to fill in.
+func (d *DB) UserConfig(ctx context.Context, userID int64) (cfg *config.Config, err error) {
+	err = d.snapshot(ctx, func(tx *sql.Tx) error {
+		cfg, err = userConfig(ctx, tx, userID)
+		return err
+	})
+	return cfg, err
+}
+
+// Spreadsheets returns userID's spreadsheets by name, and the Config they make, read together so
+// they agree.
+func (d *DB) Spreadsheets(ctx context.Context, userID int64) (sheets []Spreadsheet, cfg *config.Config, err error) {
+	err = d.snapshot(ctx, func(tx *sql.Tx) error {
+		err := scan(ctx, tx, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+			var s Spreadsheet
+			if err := rows.Scan(&s.Name, &s.Title, &s.GoogleID, &s.ServiceAccount); err != nil {
+				return err
+			}
+			sheets = append(sheets, s)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		// rowid keeps tabs in the order Google listed them.
+		err = scan(ctx, tx, `SELECT sheet, tab FROM tabs WHERE user_id = ? ORDER BY rowid`, userID, func(rows *sql.Rows) error {
+			var sheet, tab string
+			if err := rows.Scan(&sheet, &tab); err != nil {
+				return err
+			}
+			i := slices.IndexFunc(sheets, func(s Spreadsheet) bool { return s.Name == sheet })
+			sheets[i].Tabs = append(sheets[i].Tabs, tab)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		cfg, err = userConfig(ctx, tx, userID)
+		return err
+	})
+	return sheets, cfg, err
+}
+
+// SpreadsheetExists reports whether userID already has a spreadsheet called name.
+func (d *DB) SpreadsheetExists(ctx context.Context, userID int64, name string) (bool, error) {
+	var taken bool
+	err := d.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM spreadsheets WHERE user_id = ? AND name = ?)`,
+		userID, name).Scan(&taken)
+	return taken, err
+}
+
+// AddSpreadsheet records s and its tabs. Every tab starts off; the user enables ops per tab.
+func (d *DB) AddSpreadsheet(ctx context.Context, userID int64, s Spreadsheet) error {
+	return d.update(ctx, userID, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO spreadsheets (user_id, name, google_id, title, service_account) VALUES (?, ?, ?, ?, ?)`,
+			userID, s.Name, s.GoogleID, s.Title, s.ServiceAccount); err != nil {
+			return err
+		}
+		for _, tab := range s.Tabs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO tabs (user_id, sheet, tab, ops, hidden) VALUES (?, ?, ?, '[]', '[]')`,
+				userID, s.Name, tab); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteSpreadsheet removes userID's spreadsheet called name, with its tabs.
+func (d *DB) DeleteSpreadsheet(ctx context.Context, userID int64, name string) error {
+	return d.update(ctx, userID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM spreadsheets WHERE user_id = ? AND name = ?`, userID, name)
+		return err
+	})
+}
+
+// SaveTab sets the ops, hidden columns and key column of one of userID's tabs.
+func (d *DB) SaveTab(ctx context.Context, userID int64, sheet, tab string, rule config.TabRule) error {
+	return d.update(ctx, userID, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
+			jsonList(rule.Ops), jsonList(rule.Hidden), cmp.Or(rule.Key, "id"), userID, sheet, tab)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return cmp.Or(err, service.BadRequest("unknown tab"))
+		}
+		return nil
+	})
+}
+
+// CreateKey stores k (its hash, never the key itself) for userID.
+func (d *DB) CreateKey(ctx context.Context, userID int64, k config.Key) error {
+	return d.update(ctx, userID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO api_keys (hash, user_id, name, tabs, ops) VALUES (?, ?, ?, ?, ?)`,
+			k.Hash, userID, k.Name, jsonList(k.Tabs), jsonList(k.Ops))
+		return err
+	})
+}
+
+// DeleteKey removes userID's key called name.
+func (d *DB) DeleteKey(ctx context.Context, userID int64, name string) error {
+	return d.update(ctx, userID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE user_id = ? AND name = ?`, userID, name)
+		return err
+	})
+}
+
+type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// UserConfig builds userID's Config from the database, with the server-wide settings from global.
-func UserConfig(ctx context.Context, q Querier, userID int64, global *config.Config) (*config.Config, error) {
-	cfg := &config.Config{Listen: global.Listen, CacheTTL: global.CacheTTL, CORSOrigins: global.CORSOrigins,
-		Spreadsheets: map[string]config.Spreadsheet{}}
-	err := Scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+// userConfig reads userID's spreadsheets, tabs and keys from q and validates them.
+func userConfig(ctx context.Context, q querier, userID int64) (*config.Config, error) {
+	cfg := &config.Config{Spreadsheets: map[string]config.Spreadsheet{}}
+	err := scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 		var name, id string
 		var sa bool
 		if err := rows.Scan(&name, &id, &sa); err != nil {
@@ -162,7 +280,7 @@ func UserConfig(ctx context.Context, q Querier, userID int64, global *config.Con
 		return nil
 	})
 	if err == nil {
-		err = Scan(ctx, q, `SELECT sheet, tab, ops, hidden, key_column FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+		err = scan(ctx, q, `SELECT sheet, tab, ops, hidden, key_column FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 			var sheet, tab, ops, hidden string
 			var rule config.TabRule
 			if err := rows.Scan(&sheet, &tab, &ops, &hidden, &rule.Key); err != nil {
@@ -176,7 +294,7 @@ func UserConfig(ctx context.Context, q Querier, userID int64, global *config.Con
 		})
 	}
 	if err == nil {
-		err = Scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+		err = scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 			var k config.Key
 			var tabs, ops string
 			if err := rows.Scan(&k.Hash, &k.Name, &tabs, &ops); err != nil {
@@ -198,7 +316,7 @@ func UserConfig(ctx context.Context, q Querier, userID int64, global *config.Con
 	return cfg, nil
 }
 
-func Scan(ctx context.Context, q Querier, query string, userID int64, fn func(*sql.Rows) error) error {
+func scan(ctx context.Context, q querier, query string, userID int64, fn func(*sql.Rows) error) error {
 	rows, err := q.QueryContext(ctx, query, userID)
 	if err != nil {
 		return err
@@ -212,8 +330,8 @@ func Scan(ctx context.Context, q Querier, query string, userID int64, fn func(*s
 	return rows.Err()
 }
 
-// Snapshot runs fn in a read-only transaction, so all its reads see one consistent state.
-func (d *DB) Snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
+// snapshot runs fn in a read-only transaction, so all its reads see one consistent state.
+func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
@@ -222,9 +340,9 @@ func (d *DB) Snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return fn(tx)
 }
 
-// Update runs fn in a transaction and commits only if userID's resulting config still validates,
-// so validate() checks every dashboard change.
-func (d *DB) Update(ctx context.Context, userID int64, global *config.Config, fn func(tx *sql.Tx) error) error {
+// update runs fn in a transaction and commits only if userID's resulting config still validates,
+// so Validate checks every dashboard change.
+func (d *DB) update(ctx context.Context, userID int64, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -233,14 +351,14 @@ func (d *DB) Update(ctx context.Context, userID int64, global *config.Config, fn
 	if err := fn(tx); err != nil {
 		return err
 	}
-	if _, err := UserConfig(ctx, tx, userID, global); err != nil {
+	if _, err := userConfig(ctx, tx, userID); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// JSONList encodes a string list for the JSON columns; nil becomes [].
-func JSONList(s []string) string {
+// jsonList encodes a string list for the JSON columns; nil becomes [].
+func jsonList(s []string) string {
 	if s == nil {
 		return "[]"
 	}

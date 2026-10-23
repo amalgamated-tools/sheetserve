@@ -3,7 +3,6 @@ package hosted
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -198,7 +197,7 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 		m.render(w, r, u, page{Path: sheetsPage, Error: msg}, http.StatusBadGateway)
 		return
 	}
-	m.saveSheet(w, r, u, name, gid, title, viaSA, tabs)
+	m.saveSheet(w, r, u, db.Spreadsheet{Name: name, Title: title, GoogleID: gid, ServiceAccount: viaSA, Tabs: tabs})
 }
 
 // googleDetail returns Google's status and message for err, ready to append to a dashboard error.
@@ -210,20 +209,8 @@ func googleDetail(err error) string {
 }
 
 // saveSheet records a spreadsheet and its tabs, then shows it on the spreadsheets page.
-func (m *multiTenant) saveSheet(w http.ResponseWriter, r *http.Request, u user, name, gid, title string, viaSA bool, tabs []string) {
-	m.change(w, r, u, sheetsPage+"#sheet-"+name, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO spreadsheets (user_id, name, google_id, title, service_account) VALUES (?, ?, ?, ?, ?)`,
-			u.id, name, gid, title, viaSA); err != nil {
-			return err
-		}
-		for _, tab := range tabs { // every tab starts off; the user enables ops per tab
-			if _, err := tx.Exec(`INSERT INTO tabs (user_id, sheet, tab, ops, hidden) VALUES (?, ?, ?, '[]', '[]')`,
-				u.id, name, tab); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+func (m *multiTenant) saveSheet(w http.ResponseWriter, r *http.Request, u user, s db.Spreadsheet) {
+	m.change(w, r, u, sheetsPage+"#sheet-"+s.Name, m.db.AddSpreadsheet(r.Context(), u.id, s))
 }
 
 // createSheet makes a blank spreadsheet in the user's Drive from a schema, then adds it like a
@@ -243,9 +230,8 @@ func (m *multiTenant) createSheet(w http.ResponseWriter, r *http.Request, u user
 		return
 	}
 	// Check the name before creating, so a taken name doesn't leave an unused spreadsheet in Drive.
-	var taken bool
-	if err := m.db.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM spreadsheets WHERE user_id = ? AND name = ?)`,
-		u.id, form.Name).Scan(&taken); err != nil {
+	taken, err := m.db.SpreadsheetExists(r.Context(), u.id, form.Name)
+	if err != nil {
 		fail(http.StatusInternalServerError, userMessage(err))
 		return
 	}
@@ -264,7 +250,7 @@ func (m *multiTenant) createSheet(w http.ResponseWriter, r *http.Request, u user
 	for i, t := range tabs {
 		names[i] = t.Name
 	}
-	m.saveSheet(w, r, u, form.Name, gid, title, false, names)
+	m.saveSheet(w, r, u, db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names})
 }
 
 // create makes a spreadsheet with the user's own credentials, so it lands in their Drive.
@@ -320,10 +306,7 @@ func parseSchema(s string) ([]store.Tab, error) {
 }
 
 func (m *multiTenant) deleteSheet(w http.ResponseWriter, r *http.Request, u user) {
-	m.change(w, r, u, sheetsPage, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`DELETE FROM spreadsheets WHERE user_id = ? AND name = ?`, u.id, r.FormValue("name"))
-		return err
-	})
+	m.change(w, r, u, sheetsPage, m.db.DeleteSpreadsheet(r.Context(), u.id, r.FormValue("name")))
 }
 
 // TODO: hidden columns are free text; read the header row to offer checkboxes if typos bite.
@@ -347,17 +330,8 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 			return
 		}
 	}
-	m.change(w, r, u, sheetsPage+"#sheet-"+sheet, func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
-			db.JSONList(r.Form["ops"]), db.JSONList(hidden), key, u.id, sheet, tab)
-		if err != nil {
-			return err
-		}
-		if n, err := res.RowsAffected(); err != nil || n == 0 {
-			return cmp.Or(err, service.BadRequest("unknown tab"))
-		}
-		return nil
-	})
+	rule := config.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
+	m.change(w, r, u, sheetsPage+"#sheet-"+sheet, m.db.SaveTab(r.Context(), u.id, sheet, tab, rule))
 }
 
 // checkKey reads the tab's header from Google and returns why key can't be its key column, or "".
@@ -382,14 +356,13 @@ func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) 
 		m.render(w, r, u, page{Path: keysPage, Error: "could not read the form"}, http.StatusBadRequest)
 		return
 	}
+	if len(r.Form["tabs"]) == 0 {
+		m.render(w, r, u, page{Path: keysPage, Error: "pick at least one tab for the key"}, http.StatusBadRequest)
+		return
+	}
 	key := config.NewKey()
-	err := m.db.Update(r.Context(), u.id, m.global, func(tx *sql.Tx) error {
-		if len(r.Form["tabs"]) == 0 {
-			return service.BadRequest("pick at least one tab for the key")
-		}
-		_, err := tx.Exec(`INSERT INTO api_keys (hash, user_id, name, tabs, ops) VALUES (?, ?, ?, ?, ?)`,
-			config.HashKey(key), u.id, strings.TrimSpace(r.FormValue("name")), db.JSONList(r.Form["tabs"]), db.JSONList(r.Form["ops"]))
-		return err
+	err := m.db.CreateKey(r.Context(), u.id, config.Key{
+		Hash: config.HashKey(key), Name: strings.TrimSpace(r.FormValue("name")), Tabs: r.Form["tabs"], Ops: r.Form["ops"],
 	})
 	if err != nil {
 		m.render(w, r, u, page{Path: keysPage, Error: userMessage(err)}, http.StatusBadRequest)
@@ -400,16 +373,13 @@ func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) 
 }
 
 func (m *multiTenant) deleteKey(w http.ResponseWriter, r *http.Request, u user) {
-	m.change(w, r, u, keysPage, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`DELETE FROM api_keys WHERE user_id = ? AND name = ?`, u.id, r.FormValue("name"))
-		return err
-	})
+	m.change(w, r, u, keysPage, m.db.DeleteKey(r.Context(), u.id, r.FormValue("name")))
 }
 
-// change applies fn as a validated update, then redirects to "to" (a page, maybe with a fragment)
-// or shows the error on that page.
-func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, to string, fn func(tx *sql.Tx) error) {
-	if err := m.db.Update(r.Context(), u.id, m.global, fn); err != nil {
+// change finishes a dashboard update that returned err: it redirects to "to" (a page, maybe with a
+// fragment), or shows the error on that page.
+func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, to string, err error) {
+	if err != nil {
 		path, _, _ := strings.Cut(to, "#")
 		m.render(w, r, u, page{Path: path, Error: userMessage(err)}, http.StatusBadRequest)
 		return
@@ -431,7 +401,7 @@ func userMessage(err error) string {
 }
 
 func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p page, status int) {
-	if err := m.db.Snapshot(r.Context(), func(tx *sql.Tx) error { return m.load(r.Context(), tx, u.id, &p) }); err != nil {
+	if err := m.load(r.Context(), u.id, &p); err != nil {
 		slog.Error("dashboard", "user", u.id, "err", err)
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
@@ -444,42 +414,28 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 	}
 }
 
-// load fills p with userID's spreadsheets, tabs and keys, in display order. q must be one snapshot,
-// or a sheet added between the reads would leave its tabs without a sheet.
-func (m *multiTenant) load(ctx context.Context, q db.Querier, userID int64, p *page) error {
+// load fills p with userID's spreadsheets, tabs and keys, in display order.
+func (m *multiTenant) load(ctx context.Context, userID int64, p *page) error {
+	sheets, cfg, err := m.db.Spreadsheets(ctx, userID)
+	if err != nil {
+		return err
+	}
 	p.TabSpecs = []string{"*"}
-	err := db.Scan(ctx, q, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
-		var s sheetView
-		if err := rows.Scan(&s.Name, &s.Title, &s.GoogleID, &s.ServiceAccount); err != nil {
-			return err
-		}
-		p.Sheets = append(p.Sheets, s)
+	for _, s := range sheets {
+		p.Sheets = append(p.Sheets, sheetView{Name: s.Name, Title: s.Title, GoogleID: s.GoogleID, ServiceAccount: s.ServiceAccount})
 		p.TabSpecs = append(p.TabSpecs, s.Name+"/*")
-		return nil
-	})
-	if err != nil {
-		return err
 	}
-	cfg, err := db.UserConfig(ctx, q, userID, m.global)
-	if err != nil {
-		return err
+	for i, s := range sheets {
+		for _, tab := range s.Tabs {
+			rule := cfg.Spreadsheets[s.Name].Tabs[tab]
+			key := rule.KeyColumn()
+			if key == "id" {
+				key = ""
+			}
+			p.Sheets[i].Tabs = append(p.Sheets[i].Tabs, tabView{tab, rule.Ops, strings.Join(rule.Hidden, ", "), key})
+			p.TabSpecs = append(p.TabSpecs, s.Name+"/"+tab)
+		}
 	}
-	// rowid keeps tabs in the order Google listed them.
-	err = db.Scan(ctx, q, `SELECT sheet, tab FROM tabs WHERE user_id = ? ORDER BY rowid`, userID, func(rows *sql.Rows) error {
-		var sheet, tab string
-		if err := rows.Scan(&sheet, &tab); err != nil {
-			return err
-		}
-		rule := cfg.Spreadsheets[sheet].Tabs[tab]
-		i := slices.IndexFunc(p.Sheets, func(s sheetView) bool { return s.Name == sheet })
-		key := rule.KeyColumn()
-		if key == "id" {
-			key = ""
-		}
-		p.Sheets[i].Tabs = append(p.Sheets[i].Tabs, tabView{tab, rule.Ops, strings.Join(rule.Hidden, ", "), key})
-		p.TabSpecs = append(p.TabSpecs, sheet+"/"+tab)
-		return nil
-	})
 	for _, k := range cfg.Keys {
 		ops := "all the tab allows"
 		if len(k.Ops) > 0 {
@@ -487,5 +443,5 @@ func (m *multiTenant) load(ctx context.Context, q db.Querier, userID int64, p *p
 		}
 		p.Keys = append(p.Keys, keyView{k.Name, strings.Join(k.Tabs, ", "), ops})
 	}
-	return err
+	return nil
 }

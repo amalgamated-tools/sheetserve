@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"io/fs"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pressly/goose/v3"
@@ -57,10 +59,61 @@ func TestSchemaUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := UserConfig(context.Background(), db, 1, &config.Config{})
+		cfg, err := db.UserConfig(context.Background(), 1)
 		_ = db.Close()
 		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" || cfg.Spreadsheets["shop"].ServiceAccount {
 			t.Fatalf("upgraded config: %+v %v", cfg, err)
 		}
+	}
+}
+
+// Dashboard changes land in Spreadsheets in display order, and a change that leaves the config
+// invalid is rolled back.
+func TestDashboardChanges(t *testing.T) {
+	db, err := Open(t.TempDir()+"/dash.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	id, err := db.UpsertUser(ctx, "s", "s@example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []Spreadsheet{
+		{Name: "shop", GoogleID: "SS", Title: "Shop", Tabs: []string{"Orders", "Items"}},
+		{Name: "crm", GoogleID: "CC", Title: "CRM", ServiceAccount: true, Tabs: []string{"People"}},
+	} {
+		if err := db.AddSpreadsheet(ctx, id, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.SaveTab(ctx, id, "shop", "Orders", config.TabRule{Ops: []string{"read"}, Hidden: []string{"cost"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveTab(ctx, id, "shop", "Nope", config.TabRule{}); err == nil || !strings.Contains(err.Error(), "unknown tab") {
+		t.Errorf("save unknown tab: %v", err)
+	}
+	if err := db.CreateKey(ctx, id, config.Key{Hash: config.HashKey("k"), Name: "bad", Tabs: []string{"shop/Nope"}}); err == nil {
+		t.Error("key for an unknown tab was accepted")
+	}
+	sheets, cfg, err := db.Spreadsheets(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sheets) != 2 || sheets[0].Name != "crm" || !sheets[0].ServiceAccount || !slices.Equal(sheets[1].Tabs, []string{"Orders", "Items"}) {
+		t.Errorf("spreadsheets: %+v", sheets)
+	}
+	if rule := cfg.Spreadsheets["shop"].Tabs["Orders"]; !slices.Equal(rule.Ops, []string{"read"}) || rule.KeyColumn() != "id" || len(cfg.Keys) != 0 {
+		t.Errorf("config: %+v %+v", rule, cfg.Keys)
+	}
+	if exists, err := db.SpreadsheetExists(ctx, id, "crm"); err != nil || !exists {
+		t.Errorf("crm exists: %v %v", exists, err)
+	}
+	if err := db.DeleteSpreadsheet(ctx, id, "crm"); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := db.SpreadsheetExists(ctx, id, "crm"); err != nil || exists {
+		t.Errorf("crm after delete: %v %v", exists, err)
 	}
 }
