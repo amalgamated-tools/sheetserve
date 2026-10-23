@@ -109,7 +109,7 @@ type newSheetForm struct{ Name, Title, Schema string }
 func (m *multiTenant) web() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		if _, _, ok := m.currentUser(r); ok {
+		if _, _, ok := m.auth.CurrentUser(r); ok {
 			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
 			return
 		}
@@ -122,7 +122,7 @@ func (m *multiTenant) web() http.Handler {
 			m.render(w, r, u, page{Path: path}, http.StatusOK)
 		}))
 	}
-	mux.HandleFunc("POST /logout", m.logout)
+	mux.HandleFunc("POST /logout", m.auth.Logout)
 	mux.HandleFunc("GET /app/token", m.signedIn(m.token))
 	mux.HandleFunc("POST /app/sheets", m.signedIn(m.addSheet))
 	mux.HandleFunc("POST /app/sheets/new", m.signedIn(m.createSheet))
@@ -135,7 +135,7 @@ func (m *multiTenant) web() http.Handler {
 
 func (m *multiTenant) signedIn(h func(http.ResponseWriter, *http.Request, user)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, email, ok := m.currentUser(r)
+		id, email, ok := m.auth.CurrentUser(r)
 		if !ok {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
@@ -146,7 +146,7 @@ func (m *multiTenant) signedIn(h func(http.ResponseWriter, *http.Request, user))
 
 // token gives the dashboard a short-lived access token for Google Picker.
 func (m *multiTenant) token(w http.ResponseWriter, r *http.Request, u user) {
-	ts, err := m.tokenSource(u.id)
+	ts, err := m.auth.TokenSource(u.id)
 	if err == nil {
 		var t *oauth2.Token
 		if t, err = ts.Token(); err == nil {

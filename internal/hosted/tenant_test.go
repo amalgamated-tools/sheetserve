@@ -3,7 +3,6 @@ package hosted
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -375,72 +374,6 @@ func TestSpreadsheetID(t *testing.T) {
 			t.Errorf("spreadsheetID(%q) = %q, want %q", in, got, want)
 		}
 	}
-}
-
-// The OAuth callback checks state, stores the refresh token encrypted, and starts a session.
-func TestHostedSignIn(t *testing.T) {
-	m, srv := newTestHosted(t, &fakeStore{})
-	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/token":
-			if r.FormValue("code") != "good-code" || r.FormValue("code_verifier") == "" {
-				http.Error(w, "bad code", 400)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "refresh_token": "rt-new", "expires_in": 3600})
-		case "/userinfo":
-			if r.Header.Get("Authorization") != "Bearer at" {
-				http.Error(w, "no token", http.StatusUnauthorized)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
-		}
-	}))
-	defer google.Close()
-	m.oauth.Endpoint = oauth2.Endpoint{AuthURL: google.URL + "/auth", TokenURL: google.URL + "/token"}
-	m.userinfoURL = google.URL + "/userinfo"
-
-	c := browser(t)
-	resp, err := c.Get(srv.URL + "/login")
-	if err != nil {
-		t.Fatal(err)
-	}
-	loc, _ := url.Parse(resp.Header.Get("Location"))
-	if q := loc.Query(); q.Get("access_type") != "offline" || q.Get("code_challenge") == "" || q.Get("state") == "" {
-		t.Fatalf("auth url: %s", loc)
-	}
-
-	if s, _ := get(t, c, srv.URL+"/auth/callback?code=good-code&state=WRONG", ""); s != 400 {
-		t.Errorf("bad state: %d", s)
-	}
-	resp, _ = c.Get(srv.URL + "/login") // the failed attempt cleared the state cookie
-	state := must(url.Parse(resp.Header.Get("Location"))).Query().Get("state")
-	if s, body := get(t, c, srv.URL+"/auth/callback?code=good-code&state="+url.QueryEscape(state), ""); s != 303 {
-		t.Fatalf("callback: %d %s", s, body)
-	}
-	if _, body := get(t, c, srv.URL+"/sheets", ""); !strings.Contains(body, "carol@example.com") {
-		t.Errorf("dashboard after sign-in: %s", body)
-	}
-
-	var id int64
-	var sealed []byte
-	if err := m.db.QueryRow(`SELECT id, refresh_token FROM users WHERE google_sub = '123'`).Scan(&id, &sealed); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(sealed), "rt-new") {
-		t.Error("refresh token stored in plain text")
-	}
-	if rt, err := m.db.RefreshToken(context.Background(), id); err != nil || rt != "rt-new" {
-		t.Errorf("refresh token: %q %v", rt, err)
-	}
-}
-
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
 }
 
 // When Google rejects a picked spreadsheet, the dashboard shows Google's status and message.
