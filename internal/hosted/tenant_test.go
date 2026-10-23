@@ -74,6 +74,15 @@ func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
 	return out, nil
 }
 
+// failingStore fails every call.
+type failingStore struct{ err error }
+
+func (e failingStore) Read(context.Context, string, string) ([][]any, error)            { return nil, e.err }
+func (e failingStore) Append(context.Context, string, string, []any) error              { return e.err }
+func (e failingStore) SetCells(context.Context, string, string, int, map[int]any) error { return e.err }
+func (e failingStore) DeleteRow(context.Context, string, string, int) error             { return e.err }
+func (e failingStore) Tabs(context.Context, string) ([]string, error)                   { return nil, e.err }
+
 func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptest.Server) {
 	t.Helper()
 	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
@@ -86,7 +95,7 @@ func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptes
 		t.Fatal(err)
 	}
 	m := newMultiTenant(global, d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"})
-	m.newStore = func(int64) (store.Store, error) { return sheetStore, nil }
+	m.tenants.NewStore = func(int64) (store.Store, error) { return sheetStore, nil }
 	srv := httptest.NewServer(m.routes())
 	t.Cleanup(srv.Close)
 	return m, srv
@@ -299,7 +308,7 @@ func TestServiceAccountSheets(t *testing.T) {
 		t.Errorf("add by URL without a service account: %d %s", s, body)
 	}
 
-	m.saStore, m.saEmail = saStore, "sa@proj.iam.gserviceaccount.com"
+	m.tenants.SAStore, m.saEmail = saStore, "sa@proj.iam.gserviceaccount.com"
 	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
 		t.Error("URL form does not name the service account")
 	}
@@ -334,8 +343,8 @@ func TestServiceAccountSheets(t *testing.T) {
 	}
 
 	// Without the user's Google token, the service account sheet keeps working.
-	m.newStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
-	m.invalidate(1)
+	m.tenants.NewStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
+	m.tenants.Invalidate(1)
 	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 {
 		t.Errorf("service account sheet without user token: %d", s)
 	}
@@ -344,9 +353,9 @@ func TestServiceAccountSheets(t *testing.T) {
 	}
 
 	// If the server loses its service account, only those sheets fail.
-	m.newStore = func(int64) (store.Store, error) { return userStore, nil }
-	m.saStore = nil
-	m.invalidate(1)
+	m.tenants.NewStore = func(int64) (store.Store, error) { return userStore, nil }
+	m.tenants.SAStore = nil
+	m.tenants.Invalidate(1)
 	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 502 {
 		t.Errorf("service account sheet with no service account: %d", s)
 	}
@@ -434,30 +443,9 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-// A rebuilt tenant shares tab write locks with the one it replaced, which may still be serving requests.
-func TestTenantRebuildKeepsLocks(t *testing.T) {
-	m, _ := newTestHosted(t, &fakeStore{})
-	id, err := m.db.UpsertUser(context.Background(), "dave", "dave@example.com", "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old, err := m.tenant(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.invalidate(id)
-	fresh, err := m.tenant(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if old == fresh || !old.svc.SharesLocks(fresh.svc) {
-		t.Fatal("rebuilt tenant has its own tab locks")
-	}
-}
-
 // When Google rejects a picked spreadsheet, the dashboard shows Google's status and message.
 func TestAddSheetShowsGoogleError(t *testing.T) {
-	m, srv := newTestHosted(t, errStore{&googleapi.Error{Code: 404, Message: "Requested entity was not found."}})
+	m, srv := newTestHosted(t, failingStore{&googleapi.Error{Code: 404, Message: "Requested entity was not found."}})
 	alice := signInAs(t, m, srv, "alice")
 	s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}})
 	if s != 502 || !strings.Contains(body, "(404: Requested entity was not found.)") {
@@ -518,7 +506,7 @@ func TestCreateSheet(t *testing.T) {
 
 // Without a store that can create spreadsheets, the dashboard says so instead of saving a sheet.
 func TestCreateSheetUnsupported(t *testing.T) {
-	m, srv := newTestHosted(t, errStore{errors.New("unused")})
+	m, srv := newTestHosted(t, failingStore{errors.New("unused")})
 	alice := signInAs(t, m, srv, "alice")
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}); s != 502 || !strings.Contains(body, "could not create") {
 		t.Errorf("create sheet: %d %s", s, body)

@@ -58,7 +58,7 @@ func New(cfg *config.Config) (http.Handler, error) {
 		if m.saEmail, err = serviceAccountEmail(path); err != nil {
 			return nil, err
 		}
-		if m.saStore, err = store.NewGoogleStore(context.Background()); err != nil {
+		if m.tenants.SAStore, err = store.NewGoogleStore(context.Background()); err != nil {
 			return nil, fmt.Errorf("service account: %w", err)
 		}
 	}
