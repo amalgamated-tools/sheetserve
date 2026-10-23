@@ -153,7 +153,7 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 {
 		t.Fatalf("add sheet: %d %s", s, body)
 	}
-	if s, body := get(t, alice, srv.URL+"/", ""); s != 200 || !strings.Contains(body, `<a href="https://docs.google.com/spreadsheets/d/SS/edit" target="_blank" rel="noopener"`) {
+	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `<a href="https://docs.google.com/spreadsheets/d/SS/edit" target="_blank" rel="noopener"`) {
 		t.Errorf("dashboard has no link to the spreadsheet: %d", s)
 	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 {
@@ -183,8 +183,10 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	}
 
 	bob := signInAs(t, m, srv, "bob")
-	if _, body := get(t, bob, srv.URL+"/", ""); strings.Contains(body, "shop") {
-		t.Error("bob sees alice's sheet")
+	for _, page := range []string{"/sheets", "/keys"} {
+		if _, body := get(t, bob, srv.URL+page, ""); strings.Contains(body, "shop") {
+			t.Errorf("bob sees alice's sheet on %s", page)
+		}
 	}
 	if s, _ := post(t, bob, srv.URL+"/app/keys/delete", url.Values{"name": {"web"}}); s != 303 {
 		t.Errorf("bob revoke: %d", s)
@@ -211,6 +213,75 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	}
 }
 
+// The dashboard is two pages; / sends a signed-in user to the first, and each form lands back on
+// the page it's on.
+func TestDashboardPages(t *testing.T) {
+	m, srv := newTestHosted(t, &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "item"}}}})
+	alice := signInAs(t, m, srv, "alice")
+	location := func(method, path string, form url.Values) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := alice.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode, resp.Header.Get("Location")
+	}
+
+	if s, loc := location("GET", "/", nil); s != 303 || loc != "/sheets" {
+		t.Errorf("signed-in /: %d %q", s, loc)
+	}
+	if s, body := get(t, browser(t), srv.URL+"/", ""); s != 200 || !strings.Contains(body, "Sign in with Google") {
+		t.Errorf("signed-out /: %d", s)
+	}
+	for _, page := range []string{"/sheets", "/keys"} {
+		if s, _ := get(t, browser(t), srv.URL+page, ""); s != 303 {
+			t.Errorf("signed-out %s: %d", page, s)
+		}
+	}
+
+	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `<a class="button primary" href="/sheets/new">`) {
+		t.Errorf("sheets page has no create button: %d", s)
+	}
+	s, body := get(t, alice, srv.URL+"/sheets/new", "")
+	if s != 200 || !strings.Contains(body, "<title>New spreadsheet · sheetserve</title>") || !strings.Contains(body, `action="/app/sheets/new"`) ||
+		!strings.Contains(body, `<a href="/sheets" aria-current="page">`) {
+		t.Errorf("new sheet page: %d %s", s, body)
+	}
+	if s, body := get(t, alice, srv.URL+"/keys", ""); s != 200 || !strings.Contains(body, "Add a spreadsheet</a> first") {
+		t.Errorf("keys page with no sheets: %d", s)
+	}
+	if s, loc := location("POST", "/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 || loc != "/sheets#sheet-shop" {
+		t.Errorf("add sheet: %d %q", s, loc)
+	}
+	if s, loc := location("POST", "/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 || loc != "/sheets#sheet-shop" {
+		t.Errorf("save tab: %d %q", s, loc)
+	}
+	s, body = get(t, alice, srv.URL+"/sheets", "")
+	if s != 200 || !strings.Contains(body, `<title>Spreadsheets · sheetserve</title>`) || !strings.Contains(body, `id="sheet-shop"`) || strings.Contains(body, "New key") {
+		t.Errorf("sheets page: %d %s", s, body)
+	}
+
+	if s, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}}); s != 400 || !strings.Contains(body, "<title>API keys · sheetserve</title>") {
+		t.Errorf("key without tabs shows the keys page: %d", s)
+	}
+	if s, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/*"}}); s != 200 || !strings.Contains(body, "New key created") {
+		t.Errorf("create key: %d", s)
+	}
+	s, body = get(t, alice, srv.URL+"/keys", "")
+	if s != 200 || !strings.Contains(body, "<strong>web</strong>") || strings.Contains(body, "Choose from Google Drive") {
+		t.Errorf("keys page: %d %s", s, body)
+	}
+	if s, loc := location("POST", "/app/keys/delete", url.Values{"name": {"web"}}); s != 303 || loc != "/keys" {
+		t.Errorf("revoke: %d %q", s, loc)
+	}
+	if s, loc := location("POST", "/app/sheets/delete", url.Values{"name": {"shop"}}); s != 303 || loc != "/sheets" {
+		t.Errorf("remove sheet: %d %q", s, loc)
+	}
+}
+
 // A spreadsheet added by URL is read with the service account, while picked ones keep using the
 // user's token, and the dashboard only offers the URL form when a service account is configured.
 func TestServiceAccountSheets(t *testing.T) {
@@ -219,7 +290,7 @@ func TestServiceAccountSheets(t *testing.T) {
 	m, srv := newTestHosted(t, userStore)
 	alice := signInAs(t, m, srv, "alice")
 
-	if _, body := get(t, alice, srv.URL+"/", ""); strings.Contains(body, "Add by URL") {
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); strings.Contains(body, "Add by URL") {
 		t.Error("URL form shown without a service account")
 	}
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"SHARED"}, "name": {"log"}}); s != 400 || !strings.Contains(body, "no service account") {
@@ -227,7 +298,7 @@ func TestServiceAccountSheets(t *testing.T) {
 	}
 
 	m.saStore, m.saEmail = saStore, "sa@proj.iam.gserviceaccount.com"
-	if _, body := get(t, alice, srv.URL+"/", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
 		t.Error("URL form does not name the service account")
 	}
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"not a url!"}, "name": {"log"}}); s != 400 {
@@ -241,7 +312,7 @@ func TestServiceAccountSheets(t *testing.T) {
 			t.Fatalf("add sheet %v: %d %s", f, s, body)
 		}
 	}
-	if _, body := get(t, alice, srv.URL+"/", ""); !strings.Contains(body, "via service account") {
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "via service account") {
 		t.Error("dashboard does not mark the service account sheet")
 	}
 	for _, tab := range [][2]string{{"log", "Log"}, {"shop", "Orders"}} {
@@ -337,7 +408,7 @@ func TestHostedSignIn(t *testing.T) {
 	if s, body := get(t, c, srv.URL+"/auth/callback?code=good-code&state="+url.QueryEscape(state), ""); s != 303 {
 		t.Fatalf("callback: %d %s", s, body)
 	}
-	if _, body := get(t, c, srv.URL+"/", ""); !strings.Contains(body, "carol@example.com") {
+	if _, body := get(t, c, srv.URL+"/sheets", ""); !strings.Contains(body, "carol@example.com") {
 		t.Errorf("dashboard after sign-in: %s", body)
 	}
 
@@ -437,7 +508,8 @@ func TestCreateSheet(t *testing.T) {
 		t.Errorf("taken name: %d, %d creates: %s", s, fs.created, body)
 	}
 	bad := url.Values{"name": {"other"}, "schema": {"Orders: a, a"}}
-	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) || !strings.Contains(body, ">Orders: a, a</textarea>") {
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) || !strings.Contains(body, ">Orders: a, a</textarea>") ||
+		!strings.Contains(body, "<title>New spreadsheet · sheetserve</title>") {
 		t.Errorf("bad schema: %d %s", s, body)
 	}
 }
@@ -492,7 +564,7 @@ func TestSaveTabKey(t *testing.T) {
 	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 200 || !strings.Contains(body, `"Ann"`) {
 		t.Errorf("get by email: %d %s", s, body)
 	}
-	if s, body := get(t, alice, srv.URL+"/", ""); s != 200 || !strings.Contains(body, `name="key" value="email"`) {
+	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `name="key" value="email"`) {
 		t.Errorf("dashboard key: %d", s)
 	}
 	if s, body := save(""); s != 303 {

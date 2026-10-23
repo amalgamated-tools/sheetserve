@@ -51,13 +51,40 @@ type user struct {
 	email string
 }
 
+// The dashboard's pages. A form posts to /app/... and lands back on the page it's on.
+const (
+	sheetsPage   = "/sheets"
+	newSheetPage = "/sheets/new"
+	keysPage     = "/keys"
+)
+
 type page struct {
+	Path                                   string // sheetsPage, newSheetPage or keysPage
 	Email, Error, NewKey, PickerKey, AppID string
 	SAEmail                                string       // set when the server has a service account
 	NewSheet                               newSheetForm // refilled after a failed create
 	Sheets                                 []sheetView
 	Keys                                   []keyView
 	TabSpecs, AllOps                       []string
+}
+
+// Title names the page in the browser tab.
+func (p page) Title() string {
+	switch p.Path {
+	case keysPage:
+		return "API keys"
+	case newSheetPage:
+		return "New spreadsheet"
+	}
+	return "Spreadsheets"
+}
+
+// Section is the nav entry the page belongs under.
+func (p page) Section() string {
+	if p.Path == keysPage {
+		return keysPage
+	}
+	return sheetsPage
 }
 
 type sheetView struct {
@@ -82,14 +109,19 @@ type newSheetForm struct{ Name, Title, Schema string }
 func (m *multiTenant) web() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		if id, email, ok := m.currentUser(r); ok {
-			m.render(w, r, user{id, email}, page{}, http.StatusOK)
+		if _, _, ok := m.currentUser(r); ok {
+			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
 			return
 		}
 		if err := webTmpl.ExecuteTemplate(w, "login", nil); err != nil {
 			slog.Error("template", "err", err)
 		}
 	})
+	for _, path := range []string{sheetsPage, newSheetPage, keysPage} {
+		mux.HandleFunc("GET "+path, m.signedIn(func(w http.ResponseWriter, r *http.Request, u user) {
+			m.render(w, r, u, page{Path: path}, http.StatusOK)
+		}))
+	}
 	mux.HandleFunc("POST /logout", m.logout)
 	mux.HandleFunc("GET /app/token", m.signedIn(m.token))
 	mux.HandleFunc("POST /app/sheets", m.signedIn(m.addSheet))
@@ -133,17 +165,17 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	viaSA := r.FormValue("via") == "service_account"
 	if viaSA {
 		if m.saStore == nil {
-			m.render(w, r, u, page{Error: "this server has no service account"}, http.StatusBadRequest)
+			m.render(w, r, u, page{Path: sheetsPage, Error: "this server has no service account"}, http.StatusBadRequest)
 			return
 		}
 		gid, title = spreadsheetID(r.FormValue("url")), name
 	}
 	if !sheetName.MatchString(name) {
-		m.render(w, r, u, page{Error: "name must be letters, digits, - or _"}, http.StatusBadRequest)
+		m.render(w, r, u, page{Path: sheetsPage, Error: "name must be letters, digits, - or _"}, http.StatusBadRequest)
 		return
 	}
 	if gid == "" {
-		m.render(w, r, u, page{Error: "paste a Google Sheets URL"}, http.StatusBadRequest)
+		m.render(w, r, u, page{Path: sheetsPage, Error: "paste a Google Sheets URL"}, http.StatusBadRequest)
 		return
 	}
 	var tabs []string
@@ -162,7 +194,7 @@ func (m *multiTenant) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 		if viaSA {
 			msg += "; share it with " + m.saEmail + " first"
 		}
-		m.render(w, r, u, page{Error: msg}, http.StatusBadGateway)
+		m.render(w, r, u, page{Path: sheetsPage, Error: msg}, http.StatusBadGateway)
 		return
 	}
 	m.saveSheet(w, r, u, name, gid, title, viaSA, tabs)
@@ -176,9 +208,9 @@ func googleDetail(err error) string {
 	return ""
 }
 
-// saveSheet records a spreadsheet and its tabs, then redirects to the dashboard.
+// saveSheet records a spreadsheet and its tabs, then shows it on the spreadsheets page.
 func (m *multiTenant) saveSheet(w http.ResponseWriter, r *http.Request, u user, name, gid, title string, viaSA bool, tabs []string) {
-	m.change(w, r, u, func(tx *sql.Tx) error {
+	m.change(w, r, u, sheetsPage+"#sheet-"+name, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO spreadsheets (user_id, name, google_id, title, service_account) VALUES (?, ?, ?, ?, ?)`,
 			u.id, name, gid, title, viaSA); err != nil {
 			return err
@@ -197,7 +229,9 @@ func (m *multiTenant) saveSheet(w http.ResponseWriter, r *http.Request, u user, 
 // picked one. drive.file covers files the app creates, so the user needn't pick it.
 func (m *multiTenant) createSheet(w http.ResponseWriter, r *http.Request, u user) {
 	form := newSheetForm{Name: r.FormValue("name"), Title: strings.TrimSpace(r.FormValue("title")), Schema: r.FormValue("schema")}
-	fail := func(status int, msg string) { m.render(w, r, u, page{Error: msg, NewSheet: form}, status) }
+	fail := func(status int, msg string) {
+		m.render(w, r, u, page{Path: newSheetPage, Error: msg, NewSheet: form}, status)
+	}
 	if !sheetName.MatchString(form.Name) {
 		fail(http.StatusBadRequest, "name must be letters, digits, - or _")
 		return
@@ -285,7 +319,7 @@ func parseSchema(s string) ([]store.Tab, error) {
 }
 
 func (m *multiTenant) deleteSheet(w http.ResponseWriter, r *http.Request, u user) {
-	m.change(w, r, u, func(tx *sql.Tx) error {
+	m.change(w, r, u, sheetsPage, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`DELETE FROM spreadsheets WHERE user_id = ? AND name = ?`, u.id, r.FormValue("name"))
 		return err
 	})
@@ -294,7 +328,7 @@ func (m *multiTenant) deleteSheet(w http.ResponseWriter, r *http.Request, u user
 // TODO: hidden columns are free text; read the header row to offer checkboxes if typos bite.
 func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 	if err := r.ParseForm(); err != nil {
-		m.render(w, r, u, page{Error: "could not read the form"}, http.StatusBadRequest)
+		m.render(w, r, u, page{Path: sheetsPage, Error: "could not read the form"}, http.StatusBadRequest)
 		return
 	}
 	var hidden []string
@@ -308,11 +342,11 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 	// A tab without an id column is fine (it can only be listed), but a key someone typed should exist.
 	if key != "id" {
 		if msg := m.checkKey(r.Context(), u.id, sheet, tab, key); msg != "" {
-			m.render(w, r, u, page{Error: msg}, http.StatusBadRequest)
+			m.render(w, r, u, page{Path: sheetsPage, Error: msg}, http.StatusBadRequest)
 			return
 		}
 	}
-	m.change(w, r, u, func(tx *sql.Tx) error {
+	m.change(w, r, u, sheetsPage+"#sheet-"+sheet, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
 			jsonList(r.Form["ops"]), jsonList(hidden), key, u.id, sheet, tab)
 		if err != nil {
@@ -344,7 +378,7 @@ func (m *multiTenant) checkKey(ctx context.Context, userID int64, sheet, tab, ke
 
 func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) {
 	if err := r.ParseForm(); err != nil {
-		m.render(w, r, u, page{Error: "could not read the form"}, http.StatusBadRequest)
+		m.render(w, r, u, page{Path: keysPage, Error: "could not read the form"}, http.StatusBadRequest)
 		return
 	}
 	key := config.NewKey()
@@ -357,28 +391,30 @@ func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) 
 		return err
 	})
 	if err != nil {
-		m.render(w, r, u, page{Error: userMessage(err)}, http.StatusBadRequest)
+		m.render(w, r, u, page{Path: keysPage, Error: userMessage(err)}, http.StatusBadRequest)
 		return
 	}
 	m.invalidate(u.id)
-	m.render(w, r, u, page{NewKey: key}, http.StatusOK)
+	m.render(w, r, u, page{Path: keysPage, NewKey: key}, http.StatusOK)
 }
 
 func (m *multiTenant) deleteKey(w http.ResponseWriter, r *http.Request, u user) {
-	m.change(w, r, u, func(tx *sql.Tx) error {
+	m.change(w, r, u, keysPage, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`DELETE FROM api_keys WHERE user_id = ? AND name = ?`, u.id, r.FormValue("name"))
 		return err
 	})
 }
 
-// change applies fn as a validated update, then redirects to the dashboard or shows the error.
-func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, fn func(tx *sql.Tx) error) {
+// change applies fn as a validated update, then redirects to "to" (a page, maybe with a fragment)
+// or shows the error on that page.
+func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, to string, fn func(tx *sql.Tx) error) {
 	if err := m.db.update(r.Context(), u.id, m.global, fn); err != nil {
-		m.render(w, r, u, page{Error: userMessage(err)}, http.StatusBadRequest)
+		path, _, _ := strings.Cut(to, "#")
+		m.render(w, r, u, page{Path: path, Error: userMessage(err)}, http.StatusBadRequest)
 		return
 	}
 	m.invalidate(u.id)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
 func userMessage(err error) string {
@@ -402,7 +438,7 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 	p.Email, p.PickerKey, p.AppID, p.SAEmail, p.AllOps = u.email, m.pickerKey, m.appID, m.saEmail, config.AllOps
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := webTmpl.ExecuteTemplate(w, "app", p); err != nil {
+	if err := webTmpl.ExecuteTemplate(w, strings.TrimPrefix(p.Path, "/"), p); err != nil {
 		slog.Error("template", "err", err)
 	}
 }
