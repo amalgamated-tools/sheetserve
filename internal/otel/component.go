@@ -11,22 +11,7 @@ import (
 // Component values attached to log records so major runtime surfaces can be
 // distinguished in shared process output.
 const (
-	ComponentAnswer      = "answer"
-	ComponentAnswerAgent = "answeragent"
-	ComponentBootstrap   = "bootstrap"
-	ComponentDatabase    = "database"
-	ComponentDocsLLM     = "docsllm"
-	ComponentEnv         = "env"
-	ComponentHTTP        = "http"
-	ComponentPersistence = "persistence"
-	ComponentRender      = "render"
-	ComponentRenderCreds = "rendercreds"
-	ComponentRenderOAuth = "renderoauth"
-	ComponentRouter      = "router"
-	ComponentServer      = "server"
-	ComponentSlackApp    = "slackapp"
-	ComponentSlackNotify = "slacknotify"
-	ComponentWorkflows   = "workflows"
+	ComponentServer = "server"
 )
 
 type componentCtxKey struct{}

@@ -17,6 +17,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/otel"
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 )
 
 const (
@@ -69,16 +71,15 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 }
 
 func (s *Server) setupRoutes(ctx context.Context) {
-	// newctx, span := otel.StartSpan(otel.WithComponent(ctx, otel.ComponentHTTP), instrumentationName, otelkeys.ServerSetupRoutes)
-	// defer span.End()
-	// defer otel.ObserveDuration(newctx, otelkeys.ServerSetupRoutesDuration)()
+	newctx, span := otel.StartSpan(otel.WithComponent(ctx, otel.ComponentServer), instrumentationName, otelkeys.ServerSetupRoutes)
+	defer span.End()
+	defer otel.ObserveDuration(newctx, otelkeys.ServerSetupRoutesDuration)()
 
-	// slog.DebugContext(newctx, "Setting up routes")
-	// s.router.Use(middleware.Heartbeat("/healthz")) // this must be before anything else
-	// s.router.Mount("/debug", middleware.Profiler())
+	slog.DebugContext(newctx, "Setting up routes")
+	s.router.Use(middleware.Heartbeat("/healthz")) // this must be before anything else
+	s.router.Mount("/debug", middleware.Profiler())
 
-	// // everything under /slack that is a POST should call the slack middleware.
-	// s.router.Mount("/slack", s.slackRoutes())
+	// s.router.Mount("/", s.slackRoutes())
 
 	// s.router.Get("/render/oauth/callback", http.HandlerFunc(s.handleRenderOAuthCallback))
 	// s.router.Mount("/render", s.renderRoutes())

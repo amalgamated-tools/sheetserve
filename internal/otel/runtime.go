@@ -63,10 +63,7 @@ func SetupRuntimeTelemetry(ctx context.Context, shutdownTimeout time.Duration) (
 }
 
 // FlushTelemetry exports everything buffered by the global trace, log, and
-// metric providers, blocking until done or ctx expires. A Render Workflows
-// task process is torn down as soon as the task reports its result, before
-// any deferred shutdown runs, so a task must flush before it returns or
-// everything after the batch processors' first tick is lost.
+// metric providers, blocking until done or ctx expires.
 func FlushTelemetry(ctx context.Context) {
 	if tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider); ok {
 		if err := tp.ForceFlush(ctx); err != nil {

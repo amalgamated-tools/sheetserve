@@ -54,11 +54,10 @@ func SetupTracing(ctx context.Context) (func(context.Context) error, error) {
 		propagation.Baggage{},
 	))
 
-	// Every outbound client in this process (Render API, Slack, Anthropic,
-	// OAuth) leaves Transport nil, so wrapping the default transport once
-	// gives each request a client span and a traceparent header without
-	// threading an http.Client through five constructors. Algolia builds its
-	// own transport; see search.newTracedRequester.
+	// Every outbound client in this process effectively leaves Transport nil,
+	// so wrapping the default transport once gives each request a client span
+	// and a traceparent header without threading an http.Client through five
+	// constructors.
 	wrapDefaultTransport.Do(func() {
 		http.DefaultTransport = otelhttp.NewTransport(http.DefaultTransport)
 	})
