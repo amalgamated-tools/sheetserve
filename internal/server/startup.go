@@ -1,4 +1,4 @@
-package hosted
+package server
 
 import (
 	"cmp"
@@ -13,16 +13,21 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/option"
 
+	"github.com/amalgamated-tools/sheetserve/internal/api"
+	"github.com/amalgamated-tools/sheetserve/internal/auth"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
+	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
+	"github.com/amalgamated-tools/sheetserve/internal/web"
 )
 
-// New sets up the server: Google sign-in, with each user's spreadsheets and keys kept in SQLite.
-// If GOOGLE_APPLICATION_CREDENTIALS names a service account key, users can also add spreadsheets
-// that the server reaches with that service account.
-func New(cfg *config.Config) (http.Handler, error) {
+// newHandler sets up the server: Google sign-in, with each user's spreadsheets and keys kept in
+// SQLite. If GOOGLE_APPLICATION_CREDENTIALS names a service account key, users can also add
+// spreadsheets that the server reaches with that service account.
+func newHandler(cfg *config.Config) (http.Handler, error) {
 	env := map[string]string{"SHEETSERVE_BASE_URL": os.Getenv("RENDER_EXTERNAL_URL")}
 	var missing []string
 	for _, k := range []string{"SHEETSERVE_BASE_URL", "SHEETSERVE_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
@@ -46,23 +51,50 @@ func New(cfg *config.Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := newMultiTenant(cfg, d, &oauth2.Config{
+	dash := newApp(cfg, d, &oauth2.Config{
 		ClientID:     env["GOOGLE_CLIENT_ID"],
 		ClientSecret: env["GOOGLE_CLIENT_SECRET"],
 		Endpoint:     google.Endpoint,
 		RedirectURL:  strings.TrimSuffix(env["SHEETSERVE_BASE_URL"], "/") + "/auth/callback",
 		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
 	})
-	m.pickerKey, m.appID = env["GOOGLE_PICKER_API_KEY"], env["GOOGLE_PROJECT_NUMBER"]
+	dash.PickerKey, dash.AppID = env["GOOGLE_PICKER_API_KEY"], env["GOOGLE_PROJECT_NUMBER"]
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
-		if m.saEmail, err = serviceAccountEmail(path); err != nil {
+		if dash.SAEmail, err = serviceAccountEmail(path); err != nil {
 			return nil, err
 		}
-		if m.tenants.SAStore, err = store.NewGoogleStore(context.Background()); err != nil {
+		if dash.Tenants.SAStore, err = store.NewGoogleStore(context.Background()); err != nil {
 			return nil, fmt.Errorf("service account: %w", err)
 		}
 	}
-	return m.routes(), nil
+	return routes(cfg, dash), nil
+}
+
+// newApp connects sign-in, each user's API, and the dashboard that edits them.
+func newApp(global *config.Config, d *db.DB, oauth *oauth2.Config) *web.Dashboard {
+	a := auth.New(d, oauth)
+	tenants := &tenancy.Tenants{DB: d, Global: global}
+	a.OnSignIn = tenants.Invalidate // pick up the new refresh token
+	tenants.NewStore = func(userID int64) (store.Store, error) {
+		ts, err := a.TokenSource(userID)
+		if err != nil {
+			return nil, err
+		}
+		return store.NewGoogleStore(context.Background(), option.WithTokenSource(ts))
+	}
+	return &web.Dashboard{DB: d, Auth: a, Tenants: tenants}
+}
+
+func routes(global *config.Config, dash *web.Dashboard) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /login", dash.Auth.Login)
+	mux.HandleFunc("GET /auth/callback", dash.Auth.Callback)
+	mux.Handle("/v1/", dash.Tenants)
+	mux.Handle("/mcp", dash.Tenants)
+	mux.Handle("GET /openapi.json", dash.Tenants)
+	mux.Handle("/", dash.Handler())
+	return api.CORS(global, mux)
 }
 
 // serviceAccountEmail reads client_email from a service account key file, so the dashboard can
