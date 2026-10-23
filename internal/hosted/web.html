@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>sheetserve</title>
+<title>{{if .}}{{.}} · {{end}}sheetserve</title>
 <style>
   :root {
     --bg: #f6f7f9; --surface: #fff; --text: #1d2128; --muted: #626b78; --border: #dfe3e8;
@@ -35,8 +35,16 @@
   .brand { font-weight: 700; font-size: 1.15rem; display: flex; gap: .5rem; align-items: center; text-decoration: none; color: var(--text); }
   .brand svg { color: var(--accent); }
   .who { display: flex; gap: .75rem; align-items: center; color: var(--muted); }
+  .nav { display: flex; gap: .25rem; margin-right: auto; }
+  .nav a { color: var(--muted); text-decoration: none; font-weight: 600; padding: .35rem .7rem; border-radius: 7px; display: inline-flex; gap: .4rem; align-items: center; }
+  .nav a:hover { color: var(--text); background: var(--bg); }
+  .nav a[aria-current=page] { color: var(--accent); background: var(--accent-soft); }
+  .nav a[aria-current=page] .badge { background: var(--surface); color: var(--accent); }
+  .page-head { margin: .5rem 0 1.25rem; }
+  .page-head h1 { font-size: 1.5rem; }
+  .page-head p { color: var(--muted); }
 
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .card { scroll-margin-top: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 1rem; }
   .card-head { display: flex; gap: .75rem; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: .5rem; }
   .card-head > div { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
   .empty { text-align: center; color: var(--muted); padding: 2rem 1rem; border: 1px dashed var(--border); border-radius: var(--radius); }
@@ -91,7 +99,7 @@
 
 {{define "logo"}}<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>{{end}}
 
-{{define "login"}}{{template "head"}}
+{{define "login"}}{{template "head" ""}}
 <div class="login">
   <div class="card">
     <span class="brand" style="justify-content:center">{{template "logo"}}</span>
@@ -108,9 +116,15 @@
 </body></html>
 {{end}}
 
-{{define "app"}}{{template "head"}}
+
+{{/* top opens a signed-in page: the top bar with the page nav, then any flash messages. */}}
+{{define "top"}}{{template "head" .Title}}
 <div class="topbar"><div class="inner">
-  <a class="brand" href="/">{{template "logo"}} sheetserve</a>
+  <a class="brand" href="/sheets">{{template "logo"}} sheetserve</a>
+  <nav class="nav" aria-label="Pages">
+    <a href="/sheets"{{if eq .Path "/sheets"}} aria-current="page"{{end}}>Spreadsheets <span class="badge">{{len .Sheets}}</span></a>
+    <a href="/keys"{{if eq .Path "/keys"}} aria-current="page"{{end}}>API keys <span class="badge">{{len .Keys}}</span></a>
+  </nav>
   <form class="who" method="post" action="/logout"><span>{{.Email}}</span> <button class="small">Sign out</button></form>
 </div></div>
 <main>
@@ -122,10 +136,45 @@
   <span class="hint">Copy it now. It is not stored and won't be shown again.</span>
 </div>{{end}}
 </div>
+{{end}}
 
-<h2>Spreadsheets</h2>
+{{/* scripts closes main and adds the behavior every page shares. */}}
+{{define "scripts"}}</main>
+<script>
+const flash = document.getElementById("flash");
+function showError(msg) {
+  const p = document.createElement("p");
+  p.className = "flash error"; p.setAttribute("role", "alert"); p.textContent = msg;
+  flash.replaceChildren(p);
+  p.scrollIntoView({ block: "nearest" });
+}
+
+document.querySelectorAll(".origin").forEach((el) => { el.textContent = location.origin; });
+
+document.querySelectorAll("[data-copy]").forEach((btn) => {
+  btn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+    } catch { showError("Could not copy; select the text and copy it instead."); }
+  };
+});
+
+document.querySelectorAll("form[data-confirm]").forEach((f) => {
+  f.onsubmit = (e) => { if (!confirm(f.dataset.confirm)) e.preventDefault(); };
+});
+</script>
+{{end}}
+
+{{define "sheets"}}{{template "top" .}}
+<div class="page-head">
+  <h1>Spreadsheets</h1>
+  <p>Each spreadsheet is served at <code><span class="origin"></span>/v1/&lt;name&gt;/&lt;tab&gt;</code>. Turn on the ops each tab allows, then <a href="/keys">create a key</a> for it.</p>
+</div>
+
 {{range .Sheets}}{{$sheet := .Name}}
-<section class="card">
+<section class="card" id="sheet-{{.Name}}">
   <div class="card-head">
     <div><h3>{{.Name}}</h3> <small><a href="https://docs.google.com/spreadsheets/d/{{.GoogleID}}/edit" target="_blank" rel="noopener" title="Open in Google Sheets">{{.Title}} ↗</a></small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
     <form class="inline" method="post" action="/app/sheets/delete" data-confirm="Remove {{.Name}}? Keys scoped to it stop working.">
@@ -153,8 +202,9 @@
 </section>
 {{else}}<div class="empty">No spreadsheets yet. Add one from your Google Drive to get started.</div>{{end}}
 
+<h2 id="add-sheet">Add a spreadsheet</h2>
 <section class="card">
-  <h3>Add a spreadsheet</h3>
+  <h3>From Google Drive</h3>
   <div id="pick-area">
     <div class="actions"><button id="pick" class="primary" type="button">Choose from Google Drive</button></div>
     <p class="hint">If the picker asks you to sign in, allow docs.google.com in your tracker blocker (such as Privacy Badger) or allow third-party cookies for this site.</p>
@@ -166,9 +216,12 @@
       <span class="hint">Letters, digits, - or _. Used in <code>/v1/&lt;name&gt;/&lt;tab&gt;</code> and in key scopes.</span></label>
     <div class="actions"><button class="primary">Add</button> <button type="button" id="add-cancel">Cancel</button></div>
   </form>
-  <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">
+</section>
+
+<section class="card">
+  <h3>Create a blank one</h3>
   <form method="post" action="/app/sheets/new">
-    <p>Or create a blank spreadsheet in your Drive. List its tabs and their columns; each tab gets an <code>id</code> column first.</p>
+    <p>The spreadsheet is created in your Drive. List its tabs and their columns; each tab gets an <code>id</code> column first.</p>
     <label class="field"><span>Title in Drive</span><input name="title" value="{{.NewSheet.Title}}" placeholder="Same as the name"></label>
     <label class="field"><span>Name in URLs</span><input name="name" value="{{.NewSheet.Name}}" pattern="[A-Za-z0-9_\-]+" required></label>
     <label class="field"><span>Tabs and columns</span>
@@ -176,85 +229,26 @@
       <span class="hint">One tab per line, as <code>Tab: column, column</code>.</span></label>
     <div class="actions"><button>Create spreadsheet</button></div>
   </form>
-  {{if .SAEmail}}
-  <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">
+</section>
+
+{{if .SAEmail}}
+<section class="card">
+  <h3>By URL, with the service account</h3>
   <form method="post" action="/app/sheets">
-    <p>Or share a spreadsheet with <code>{{.SAEmail}}</code> (Viewer to read, Editor to write) and add it by URL.
+    <p>Share a spreadsheet with <code>{{.SAEmail}}</code> (Viewer to read, Editor to write) and add it by URL.
     The server then reaches it with its service account, so its keys don't depend on your Google sign-in.</p>
     <input type="hidden" name="via" value="service_account">
     <label class="field"><span>Spreadsheet URL</span><input type="url" name="url" placeholder="https://docs.google.com/spreadsheets/d/…" required></label>
     <label class="field"><span>Name in URLs</span><input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
     <div class="actions"><button>Add by URL</button></div>
   </form>
-  {{end}}
 </section>
+{{end}}
 
-<h2>API keys</h2>
-{{if .Keys}}
-<section class="card"><div class="table-wrap"><table>
-  <tr><th>Name</th><th>Tabs</th><th>Ops</th><th></th></tr>
-  {{range .Keys}}
-  <tr><td><strong>{{.Name}}</strong></td><td><code>{{.Tabs}}</code></td><td>{{.Ops}}</td>
-    <td class="right"><form class="inline" method="post" action="/app/keys/delete" data-confirm="Revoke {{.Name}}? Clients using it will get 401.">
-      <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Revoke</button></form></td></tr>
-  {{end}}
-</table></div></section>
-{{else}}<div class="empty">No keys yet.</div>{{end}}
-
-<section class="card">
-  <h3>New key</h3>
-  {{if .Sheets}}
-  <form method="post" action="/app/keys">
-    <label class="field"><span>Name</span><input name="name" required placeholder="e.g. website, agent"></label>
-    <fieldset><legend>Tabs</legend>
-      <div class="chips">{{range .TabSpecs}}<label class="chip"><input type="checkbox" name="tabs" value="{{.}}"> {{if eq . "*"}}everything{{else}}{{.}}{{end}}</label>{{end}}</div>
-    </fieldset>
-    <fieldset><legend>Limit to ops <span class="hint">(optional; otherwise whatever each tab allows)</span></legend>
-      <div class="chips">{{range .AllOps}}<label class="chip"><input type="checkbox" name="ops" value="{{.}}"> {{.}}</label>{{end}}</div>
-    </fieldset>
-    <div class="actions"><button class="primary">Create key</button></div>
-  </form>
-  {{else}}<p class="muted">Add a spreadsheet first, then create a key for its tabs.</p>{{end}}
-</section>
-
-<h2>Using a key</h2>
-<section class="card">
-  <p>Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
-  <div class="table-wrap"><table>
-    <tr><td>REST</td><td><code><span class="origin"></span>/v1/&lt;sheet&gt;/&lt;tab&gt;</code></td></tr>
-    <tr><td>MCP</td><td><code id="mcp-url"><span class="origin"></span>/mcp</code> <button class="small" type="button" data-copy="#mcp-url">Copy</button></td></tr>
-    <tr><td>OpenAPI</td><td><code><span class="origin"></span>/openapi.json</code> <span class="hint">covers the tabs the key can reach</span></td></tr>
-  </table></div>
-</section>
-</main>
-
+{{template "scripts"}}
 <script src="https://apis.google.com/js/api.js"></script>
 <script>
-const flash = document.getElementById("flash");
-function showError(msg) {
-  const p = document.createElement("p");
-  p.className = "flash error"; p.setAttribute("role", "alert"); p.textContent = msg;
-  flash.replaceChildren(p);
-  p.scrollIntoView({ block: "nearest" });
-}
-
-document.querySelectorAll(".origin").forEach((el) => { el.textContent = location.origin; });
-
-document.querySelectorAll("[data-copy]").forEach((btn) => {
-  btn.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
-      btn.textContent = "Copied";
-      setTimeout(() => { btn.textContent = "Copy"; }, 1500);
-    } catch { showError("Could not copy; select the text and copy it instead."); }
-  };
-});
-
-document.querySelectorAll("form[data-confirm]").forEach((f) => {
-  f.onsubmit = (e) => { if (!confirm(f.dataset.confirm)) e.preventDefault(); };
-});
-
-// A tab row's Save button lights up once its ops or hidden columns change.
+// A tab row's Save button lights up once its ops, hidden columns or key column change.
 document.querySelectorAll("form.tab-form").forEach((f) => {
   const button = f.querySelector("button");
   for (const input of f.elements) input.addEventListener("input", () => button.classList.add("dirty"));
@@ -289,5 +283,50 @@ pick.onclick = async () => {
   });
 };
 </script>
+</body></html>
+{{end}}
+
+{{define "keys"}}{{template "top" .}}
+<div class="page-head">
+  <h1>API keys</h1>
+  <p>A key reaches the tabs you scope it to, with at most the ops each tab allows. Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
+</div>
+
+{{if .Keys}}
+<section class="card"><div class="table-wrap"><table>
+  <tr><th>Name</th><th>Tabs</th><th>Ops</th><th></th></tr>
+  {{range .Keys}}
+  <tr><td><strong>{{.Name}}</strong></td><td><code>{{.Tabs}}</code></td><td>{{.Ops}}</td>
+    <td class="right"><form class="inline" method="post" action="/app/keys/delete" data-confirm="Revoke {{.Name}}? Clients using it will get 401.">
+      <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Revoke</button></form></td></tr>
+  {{end}}
+</table></div></section>
+{{else}}<div class="empty">No keys yet.</div>{{end}}
+
+<h2>New key</h2>
+<section class="card">
+  {{if .Sheets}}
+  <form method="post" action="/app/keys">
+    <label class="field"><span>Name</span><input name="name" required placeholder="e.g. website, agent"></label>
+    <fieldset><legend>Tabs</legend>
+      <div class="chips">{{range .TabSpecs}}<label class="chip"><input type="checkbox" name="tabs" value="{{.}}"> {{if eq . "*"}}everything{{else}}{{.}}{{end}}</label>{{end}}</div>
+    </fieldset>
+    <fieldset><legend>Limit to ops <span class="hint">(optional; otherwise whatever each tab allows)</span></legend>
+      <div class="chips">{{range .AllOps}}<label class="chip"><input type="checkbox" name="ops" value="{{.}}"> {{.}}</label>{{end}}</div>
+    </fieldset>
+    <div class="actions"><button class="primary">Create key</button></div>
+  </form>
+  {{else}}<p class="muted"><a href="/sheets#add-sheet">Add a spreadsheet</a> first, then create a key for its tabs.</p>{{end}}
+</section>
+
+<h2>Using a key</h2>
+<section class="card">
+  <div class="table-wrap"><table>
+    <tr><td>REST</td><td><code><span class="origin"></span>/v1/&lt;sheet&gt;/&lt;tab&gt;</code></td></tr>
+    <tr><td>MCP</td><td><code id="mcp-url"><span class="origin"></span>/mcp</code> <button class="small" type="button" data-copy="#mcp-url">Copy</button></td></tr>
+    <tr><td>OpenAPI</td><td><code><span class="origin"></span>/openapi.json</code> <span class="hint">covers the tabs the key can reach</span></td></tr>
+  </table></div>
+</section>
+{{template "scripts"}}
 </body></html>
 {{end}}

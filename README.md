@@ -1,7 +1,7 @@
 # sheetserve
 
 Self-hosted REST API and MCP server for Google Sheets. It is one binary.
-People sign in with Google and manage their spreadsheets, tabs and API keys in a web dashboard.
+People sign in with Google and manage their spreadsheets, tabs and API keys in a web dashboard, which has a Spreadsheets page and an API keys page.
 The server keeps them in SQLite.
 
 - Each tab gets `GET / POST / PATCH / DELETE` routes.
@@ -45,7 +45,7 @@ mise run run           # or: go run ./cmd/server, with the variables exported
 ```
 
 Sign in, add a spreadsheet from your Drive, and turn on the ops you want for each tab. New tabs start with no ops enabled.
-Then create an API key. Row 1 of each tab is its header row.
+Then create an API key on the API keys page. Row 1 of each tab is its header row.
 
 Each tab has a key column, which identifies a row in `GET`, `PATCH` and `DELETE /v1/<sheet>/<tab>/<key>`. It is `id` unless you
 name another column, such as `email` or `sku`, on the tab's row in the dashboard.
