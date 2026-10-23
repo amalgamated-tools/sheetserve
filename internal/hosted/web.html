@@ -54,7 +54,7 @@
   button.small { padding: .15rem .55rem; font-size: .85rem; }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-  input[type=text], input:not([type]), input[type=url] { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .6rem; min-width: 0; }
+  input[type=text], input:not([type]), input[type=url], textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .6rem; min-width: 0; }
   input::placeholder { color: var(--muted); }
   label { white-space: nowrap; }
   form.inline { display: inline; }
@@ -164,6 +164,16 @@
     <label class="field"><span>Name in URLs</span><input name="name" pattern="[A-Za-z0-9_\-]+" required>
       <span class="hint">Letters, digits, - or _. Used in <code>/v1/&lt;name&gt;/&lt;tab&gt;</code> and in key scopes.</span></label>
     <div class="actions"><button class="primary">Add</button> <button type="button" id="add-cancel">Cancel</button></div>
+  </form>
+  <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">
+  <form method="post" action="/app/sheets/new">
+    <p>Or create a blank spreadsheet in your Drive. List its tabs and their columns; each tab gets an <code>id</code> column first.</p>
+    <label class="field"><span>Title in Drive</span><input name="title" value="{{.NewSheet.Title}}" placeholder="Same as the name"></label>
+    <label class="field"><span>Name in URLs</span><input name="name" value="{{.NewSheet.Name}}" pattern="[A-Za-z0-9_\-]+" required></label>
+    <label class="field"><span>Tabs and columns</span>
+      <textarea name="schema" rows="4" required placeholder="Orders: item, qty, price&#10;Customers: name, email">{{.NewSheet.Schema}}</textarea>
+      <span class="hint">One tab per line, as <code>Tab: column, column</code>.</span></label>
+    <div class="actions"><button>Create spreadsheet</button></div>
   </form>
   {{if .SAEmail}}
   <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">

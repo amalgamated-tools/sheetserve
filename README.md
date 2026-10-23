@@ -47,6 +47,16 @@ mise run run           # or: go run ./cmd/server, with the variables exported
 Sign in, add a spreadsheet from your Drive, and turn on the ops you want for each tab. New tabs start with no ops enabled.
 Then create an API key. Row 1 of each tab must be a header row with an `id` column. The server generates ids for the rows it creates.
 
+To start from nothing, create a blank spreadsheet in the dashboard instead. List one tab per line with its columns:
+
+```text
+Orders: item, qty, price
+Customers: name, email
+```
+
+The server creates the spreadsheet in your Drive with your Google account, writes and freezes each header row,
+and puts an `id` column first unless you list one. `drive.file` covers files the app creates, so you don't need to pick it.
+
 By default, a key acts through the Google account of the user who made it.
 
 ## Service account (optional)

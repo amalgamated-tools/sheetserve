@@ -20,6 +20,17 @@ type Store interface {
 	Tabs(ctx context.Context, spreadsheetID string) ([]string, error)
 }
 
+// Tab is a tab for a new spreadsheet, with the header row it starts with.
+type Tab struct {
+	Name    string
+	Columns []string
+}
+
+// Creator makes new spreadsheets. A Store that can't create one doesn't implement it.
+type Creator interface {
+	Create(ctx context.Context, title string, tabs []Tab) (spreadsheetID string, err error)
+}
+
 type googleStore struct {
 	svc  *sheets.Service
 	mu   sync.Mutex
@@ -94,6 +105,26 @@ func (g *googleStore) Tabs(ctx context.Context, id string) ([]string, error) {
 		out = append(out, sh.Properties.Title)
 	}
 	return out, nil
+}
+
+// Create makes a spreadsheet with tabs in order, each with its header row written and frozen.
+func (g *googleStore) Create(ctx context.Context, title string, tabs []Tab) (string, error) {
+	ss := &sheets.Spreadsheet{Properties: &sheets.SpreadsheetProperties{Title: title}}
+	for _, t := range tabs {
+		var header []*sheets.CellData
+		for _, c := range t.Columns {
+			header = append(header, &sheets.CellData{UserEnteredValue: &sheets.ExtendedValue{StringValue: &c}})
+		}
+		ss.Sheets = append(ss.Sheets, &sheets.Sheet{
+			Properties: &sheets.SheetProperties{Title: t.Name, GridProperties: &sheets.GridProperties{FrozenRowCount: 1}},
+			Data:       []*sheets.GridData{{RowData: []*sheets.RowData{{Values: header}}}},
+		})
+	}
+	created, err := g.svc.Spreadsheets.Create(ss).Fields("spreadsheetId").Context(ctx).Do()
+	if err != nil {
+		return "", err
+	}
+	return created.SpreadsheetId, nil
 }
 
 func (g *googleStore) gid(ctx context.Context, id, tab string) (int64, error) {
