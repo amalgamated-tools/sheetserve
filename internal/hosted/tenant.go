@@ -3,7 +3,6 @@ package hosted
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,14 +108,11 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 	if t, ok := m.tenants[userID]; ok {
 		return t, nil
 	}
-	var cfg *config.Config
-	err := m.db.Snapshot(ctx, func(tx *sql.Tx) (err error) {
-		cfg, err = db.UserConfig(ctx, tx, userID, m.global)
-		return err
-	})
+	cfg, err := m.db.UserConfig(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
+	cfg.Listen, cfg.CacheTTL, cfg.CORSOrigins = m.global.Listen, m.global.CacheTTL, m.global.CORSOrigins
 	rs := routedStore{sa: m.saStore, viaSA: map[string]bool{}}
 	// Without the user's token, their service account spreadsheets still work.
 	if rs.user, err = m.newStore(userID); err != nil {
