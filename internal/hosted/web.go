@@ -19,6 +19,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
@@ -348,7 +349,7 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	m.change(w, r, u, sheetsPage+"#sheet-"+sheet, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
-			jsonList(r.Form["ops"]), jsonList(hidden), key, u.id, sheet, tab)
+			db.JSONList(r.Form["ops"]), db.JSONList(hidden), key, u.id, sheet, tab)
 		if err != nil {
 			return err
 		}
@@ -382,12 +383,12 @@ func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) 
 		return
 	}
 	key := config.NewKey()
-	err := m.db.update(r.Context(), u.id, m.global, func(tx *sql.Tx) error {
+	err := m.db.Update(r.Context(), u.id, m.global, func(tx *sql.Tx) error {
 		if len(r.Form["tabs"]) == 0 {
 			return service.BadRequest("pick at least one tab for the key")
 		}
 		_, err := tx.Exec(`INSERT INTO api_keys (hash, user_id, name, tabs, ops) VALUES (?, ?, ?, ?, ?)`,
-			config.HashKey(key), u.id, strings.TrimSpace(r.FormValue("name")), jsonList(r.Form["tabs"]), jsonList(r.Form["ops"]))
+			config.HashKey(key), u.id, strings.TrimSpace(r.FormValue("name")), db.JSONList(r.Form["tabs"]), db.JSONList(r.Form["ops"]))
 		return err
 	})
 	if err != nil {
@@ -408,7 +409,7 @@ func (m *multiTenant) deleteKey(w http.ResponseWriter, r *http.Request, u user) 
 // change applies fn as a validated update, then redirects to "to" (a page, maybe with a fragment)
 // or shows the error on that page.
 func (m *multiTenant) change(w http.ResponseWriter, r *http.Request, u user, to string, fn func(tx *sql.Tx) error) {
-	if err := m.db.update(r.Context(), u.id, m.global, fn); err != nil {
+	if err := m.db.Update(r.Context(), u.id, m.global, fn); err != nil {
 		path, _, _ := strings.Cut(to, "#")
 		m.render(w, r, u, page{Path: path, Error: userMessage(err)}, http.StatusBadRequest)
 		return
@@ -430,7 +431,7 @@ func userMessage(err error) string {
 }
 
 func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p page, status int) {
-	if err := m.db.snapshot(r.Context(), func(tx *sql.Tx) error { return m.load(r.Context(), tx, u.id, &p) }); err != nil {
+	if err := m.db.Snapshot(r.Context(), func(tx *sql.Tx) error { return m.load(r.Context(), tx, u.id, &p) }); err != nil {
 		slog.Error("dashboard", "user", u.id, "err", err)
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
@@ -445,9 +446,9 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 
 // load fills p with userID's spreadsheets, tabs and keys, in display order. q must be one snapshot,
 // or a sheet added between the reads would leave its tabs without a sheet.
-func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page) error {
+func (m *multiTenant) load(ctx context.Context, q db.Querier, userID int64, p *page) error {
 	p.TabSpecs = []string{"*"}
-	err := scan(ctx, q, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+	err := db.Scan(ctx, q, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 		var s sheetView
 		if err := rows.Scan(&s.Name, &s.Title, &s.GoogleID, &s.ServiceAccount); err != nil {
 			return err
@@ -459,12 +460,12 @@ func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page
 	if err != nil {
 		return err
 	}
-	cfg, err := userConfig(ctx, q, userID, m.global)
+	cfg, err := db.UserConfig(ctx, q, userID, m.global)
 	if err != nil {
 		return err
 	}
 	// rowid keeps tabs in the order Google listed them.
-	err = scan(ctx, q, `SELECT sheet, tab FROM tabs WHERE user_id = ? ORDER BY rowid`, userID, func(rows *sql.Rows) error {
+	err = db.Scan(ctx, q, `SELECT sheet, tab FROM tabs WHERE user_id = ? ORDER BY rowid`, userID, func(rows *sql.Rows) error {
 		var sheet, tab string
 		if err := rows.Scan(&sheet, &tab); err != nil {
 			return err

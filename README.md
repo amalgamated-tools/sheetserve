@@ -152,7 +152,7 @@ mise run run          # run the server
 mise run db:new <name> # create a database migration
 ```
 
-The SQLite schema lives in `internal/hosted/migrations` as [goose](https://github.com/pressly/goose) migrations.
+The SQLite schema lives in `internal/db/migrations` as [goose](https://github.com/pressly/goose) migrations.
 They are built into the binary, and the server applies new ones when it opens the database.
 
 mise loads `.env` into every task, if the file exists. Copy `.env.example` to `.env` and fill it in.
