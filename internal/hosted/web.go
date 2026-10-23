@@ -62,6 +62,7 @@ type page struct {
 
 type sheetView struct {
 	Name, Title    string
+	GoogleID       string // for the link to open it in Google Sheets
 	ServiceAccount bool
 	Tabs           []tabView
 }
@@ -70,6 +71,7 @@ type tabView struct {
 	Name   string
 	Ops    []string
 	Hidden string
+	Key    string // "" when it's the default, id
 }
 
 type keyView struct{ Name, Tabs, Ops string }
@@ -301,9 +303,18 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 			hidden = append(hidden, h)
 		}
 	}
+	sheet, tab := r.FormValue("sheet"), r.FormValue("tab")
+	key := cmp.Or(strings.TrimSpace(r.FormValue("key")), "id")
+	// A tab without an id column is fine (it can only be listed), but a key someone typed should exist.
+	if key != "id" {
+		if msg := m.checkKey(r.Context(), u.id, sheet, tab, key); msg != "" {
+			m.render(w, r, u, page{Error: msg}, http.StatusBadRequest)
+			return
+		}
+	}
 	m.change(w, r, u, func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE tabs SET ops = ?, hidden = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
-			jsonList(r.Form["ops"]), jsonList(hidden), u.id, r.FormValue("sheet"), r.FormValue("tab"))
+		res, err := tx.Exec(`UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
+			jsonList(r.Form["ops"]), jsonList(hidden), key, u.id, sheet, tab)
 		if err != nil {
 			return err
 		}
@@ -312,6 +323,23 @@ func (m *multiTenant) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 		}
 		return nil
 	})
+}
+
+// checkKey reads the tab's header from Google and returns why key can't be its key column, or "".
+func (m *multiTenant) checkKey(ctx context.Context, userID int64, sheet, tab, key string) string {
+	t, err := m.tenant(ctx, userID)
+	var header []string
+	if err == nil {
+		header, err = t.svc.Header(ctx, sheet, tab)
+	}
+	switch {
+	case err != nil:
+		slog.Error("read header", "user", userID, "sheet", sheet, "tab", tab, "err", err)
+		return "could not read " + sheet + "/" + tab + " from Google to check its key column" + googleDetail(err)
+	case !slices.Contains(header, key):
+		return fmt.Sprintf("%s/%s has no %q column in row 1", sheet, tab, key)
+	}
+	return ""
 }
 
 func (m *multiTenant) createKey(w http.ResponseWriter, r *http.Request, u user) {
@@ -383,9 +411,9 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 // or a sheet added between the reads would leave its tabs without a sheet.
 func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page) error {
 	p.TabSpecs = []string{"*"}
-	err := scan(ctx, q, `SELECT name, title, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+	err := scan(ctx, q, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 		var s sheetView
-		if err := rows.Scan(&s.Name, &s.Title, &s.ServiceAccount); err != nil {
+		if err := rows.Scan(&s.Name, &s.Title, &s.GoogleID, &s.ServiceAccount); err != nil {
 			return err
 		}
 		p.Sheets = append(p.Sheets, s)
@@ -407,7 +435,11 @@ func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page
 		}
 		rule := cfg.Spreadsheets[sheet].Tabs[tab]
 		i := slices.IndexFunc(p.Sheets, func(s sheetView) bool { return s.Name == sheet })
-		p.Sheets[i].Tabs = append(p.Sheets[i].Tabs, tabView{tab, rule.Ops, strings.Join(rule.Hidden, ", ")})
+		key := rule.KeyColumn()
+		if key == "id" {
+			key = ""
+		}
+		p.Sheets[i].Tabs = append(p.Sheets[i].Tabs, tabView{tab, rule.Ops, strings.Join(rule.Hidden, ", "), key})
 		p.TabSpecs = append(p.TabSpecs, sheet+"/"+tab)
 		return nil
 	})

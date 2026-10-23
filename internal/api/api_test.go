@@ -292,6 +292,19 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 	}
 }
 
+// tabFailStore fails every read of one tab.
+type tabFailStore struct {
+	*fakeStore
+	tab string
+}
+
+func (f tabFailStore) Read(ctx context.Context, id, tab string) ([][]any, error) {
+	if tab == f.tab {
+		return nil, fmt.Errorf("read %s: unavailable", tab)
+	}
+	return f.fakeStore.Read(ctx, id, tab)
+}
+
 // A tab that fails to load keeps its name reserved, so the next tab can't take over its tools.
 func TestFailedTabKeepsName(t *testing.T) {
 	cfg := &config.Config{
@@ -304,10 +317,10 @@ func TestFailedTabKeepsName(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	store := &fakeStore{tabs: map[string][][]any{"SS/A_B": {{"id", "name"}}}} // "A B" has no id column
+	store := tabFailStore{&fakeStore{tabs: map[string][][]any{"SS/A_B": {{"id", "name"}}}}, "A B"}
 	a := New(cfg, service.New(cfg, store))
 	var names []string
-	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _ string, _, _ []string) { names = append(names, name) })
+	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _, _ string, _, _ []string) { names = append(names, name) })
 	if !slices.Equal(names, []string{"shop_A_B_2"}) {
 		t.Fatalf("names %v, want [shop_A_B_2]", names)
 	}
@@ -427,5 +440,89 @@ func TestGoogleRateLimit(t *testing.T) {
 		if retry := rec.Header().Get("Retry-After"); rec.Code != want || (want == 429) != (retry == "60") {
 			t.Errorf("Google %d: got %d, Retry-After %q: %s", code, rec.Code, retry, rec.Body)
 		}
+	}
+}
+
+// A tab can name its key column. Without one it can only be listed, and its tools and spec say so;
+// a chosen key is required on create, unique, and fixed; a key that matches two rows is refused.
+func TestKeyColumns(t *testing.T) {
+	cfg := &config.Config{
+		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
+			"Log":    {Ops: config.AllOps},
+			"People": {Ops: config.AllOps, Key: "email"},
+			"Dupes":  {Ops: []string{"read"}},
+		}}},
+		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{
+		"SS/Log":    {{"at", "msg"}, {"1", "boot"}},
+		"SS/People": {{"email", "name"}},
+		"SS/Dupes":  {{"id", "v"}, {"x", 1}, {"x", 2}},
+	}}
+	h := New(cfg, service.New(cfg, store)).Routes()
+
+	for _, s := range []struct {
+		name, method, path, body string
+		status                   int
+		want                     string
+	}{
+		{"keyless list", "GET", "/v1/shop/Log", "", 200, `"msg":"boot"`},
+		{"keyless get", "GET", "/v1/shop/Log/1", "", 403, `has no \"id\" column, so it can only be listed`},
+		{"keyless create", "POST", "/v1/shop/Log", `{"msg":"x"}`, 403, "can only be listed"},
+		{"keyless update", "PATCH", "/v1/shop/Log/1", `{"msg":"x"}`, 403, "can only be listed"},
+		{"keyless delete", "DELETE", "/v1/shop/Log/1", "", 403, "can only be listed"},
+		{"key required", "POST", "/v1/shop/People", `{"name":"Ann"}`, 400, "email is the tab's key and is required"},
+		{"create with key", "POST", "/v1/shop/People", `{"email":"ann@example.com","name":"Ann"}`, 201, `"email":"ann@example.com"`},
+		{"key unique", "POST", "/v1/shop/People", `{"email":"ann@example.com"}`, 409, "already exists"},
+		{"get by key", "GET", "/v1/shop/People/ann@example.com", "", 200, `"name":"Ann"`},
+		{"key fixed", "PATCH", "/v1/shop/People/ann@example.com", `{"email":"b@example.com"}`, 400, "can't be changed"},
+		{"update by key", "PATCH", "/v1/shop/People/ann@example.com", `{"name":"Anne"}`, 200, `"name":"Anne"`},
+		{"delete by key", "DELETE", "/v1/shop/People/ann@example.com", "", 200, `"deleted"`},
+		{"duplicate key", "GET", "/v1/shop/Dupes/x", "", 409, "more than one row"},
+	} {
+		status, body := call(t, h, s.method, s.path, "admin-key", s.body)
+		if status != s.status || !strings.Contains(body, s.want) {
+			t.Errorf("%s: got %d %s, want %d containing %s", s.name, status, body, s.status, s.want)
+		}
+	}
+
+	_, body := call(t, h, "POST", "/mcp", "admin-key", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	var list struct {
+		Result struct {
+			Tools []struct {
+				Name        string
+				InputSchema struct{ Required []string } `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("tools/list: %v: %s", err, body)
+	}
+	var names []string
+	for _, tool := range list.Result.Tools {
+		if strings.HasPrefix(tool.Name, "shop_Log") {
+			names = append(names, tool.Name)
+		}
+		if tool.Name == "shop_People_create" && !slices.Equal(tool.InputSchema.Required, []string{"email"}) {
+			t.Errorf("People create requires %v, want [email]", tool.InputSchema.Required)
+		}
+	}
+	if !slices.Equal(names, []string{"shop_Log_list"}) {
+		t.Errorf("keyless tools: %v, want [shop_Log_list]", names)
+	}
+
+	_, body = call(t, h, "GET", "/openapi.json", "admin-key", "")
+	var spec struct{ Paths map[string]map[string]any }
+	if err := json.Unmarshal([]byte(body), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Collect(maps.Keys(spec.Paths["/v1/shop/Log"])); !slices.Equal(got, []string{"get"}) {
+		t.Errorf("keyless collection ops: %v, want [get]", got)
+	}
+	if _, ok := spec.Paths["/v1/shop/Log/{id}"]; ok {
+		t.Error("keyless tab has an item path")
 	}
 }

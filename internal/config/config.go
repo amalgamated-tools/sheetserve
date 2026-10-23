@@ -34,7 +34,11 @@ type Spreadsheet struct {
 type TabRule struct {
 	Ops    []string
 	Hidden []string
+	Key    string // the column that identifies a row; "" means "id"
 }
+
+// KeyColumn returns the column that identifies a row. A tab whose header lacks it can only be listed.
+func (r TabRule) KeyColumn() string { return cmp.Or(r.Key, "id") }
 
 type Key struct {
 	Name string

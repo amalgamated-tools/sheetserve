@@ -153,6 +153,9 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 {
 		t.Fatalf("add sheet: %d %s", s, body)
 	}
+	if s, body := get(t, alice, srv.URL+"/", ""); s != 200 || !strings.Contains(body, `<a href="https://docs.google.com/spreadsheets/d/SS/edit" target="_blank" rel="noopener"`) {
+		t.Errorf("dashboard has no link to the spreadsheet: %d", s)
+	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 {
 		t.Fatalf("save tab: %d %s", s, body)
 	}
@@ -464,5 +467,38 @@ func TestParseSchema(t *testing.T) {
 		if _, err := parseSchema(in); err == nil || !strings.Contains(err.Error(), msg) {
 			t.Errorf("parseSchema(%q): %v, want %q", in, err, msg)
 		}
+	}
+}
+
+// A tab's key column is checked against its header when saved; left blank, it's id.
+func TestSaveTabKey(t *testing.T) {
+	fs := &fakeStore{tabs: map[string][][]any{"SS/People": {{"email", "name"}, {"ann@example.com", "Ann"}}}}
+	m, srv := newTestHosted(t, fs)
+	alice := signInAs(t, m, srv, "alice")
+	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"crm"}, "google_id": {"SS"}, "title": {"CRM"}}); s != 303 {
+		t.Fatalf("add sheet: %d %s", s, body)
+	}
+	save := func(key string) (int, string) {
+		return post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"crm"}, "tab": {"People"}, "ops": {"read"}, "key": {key}})
+	}
+	if s, body := save("nope"); s != 400 || !strings.Contains(body, `crm/People has no &#34;nope&#34; column in row 1`) {
+		t.Errorf("unknown key: %d %s", s, body)
+	}
+	if s, body := save(" email "); s != 303 {
+		t.Fatalf("save key: %d %s", s, body)
+	}
+	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"crm/People"}})
+	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
+	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 200 || !strings.Contains(body, `"Ann"`) {
+		t.Errorf("get by email: %d %s", s, body)
+	}
+	if s, body := get(t, alice, srv.URL+"/", ""); s != 200 || !strings.Contains(body, `name="key" value="email"`) {
+		t.Errorf("dashboard key: %d", s)
+	}
+	if s, body := save(""); s != 303 {
+		t.Fatalf("clear key: %d %s", s, body)
+	}
+	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 403 || !strings.Contains(body, "can only be listed") {
+		t.Errorf("get without id column: %d %s", s, body)
 	}
 }

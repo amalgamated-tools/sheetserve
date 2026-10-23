@@ -127,20 +127,21 @@
 {{range .Sheets}}{{$sheet := .Name}}
 <section class="card">
   <div class="card-head">
-    <div><h3>{{.Name}}</h3> <small>{{.Title}}</small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
+    <div><h3>{{.Name}}</h3> <small><a href="https://docs.google.com/spreadsheets/d/{{.GoogleID}}/edit" target="_blank" rel="noopener" title="Open in Google Sheets">{{.Title}} ↗</a></small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
     <form class="inline" method="post" action="/app/sheets/delete" data-confirm="Remove {{.Name}}? Keys scoped to it stop working.">
       <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Remove</button>
     </form>
   </div>
-  <p class="hint">Endpoint: <code><span class="origin"></span>/v1/{{.Name}}/&lt;tab&gt;</code>. Each tab needs a header row with an <code>id</code> column.</p>
+  <p class="hint">Endpoint: <code><span class="origin"></span>/v1/{{.Name}}/&lt;tab&gt;</code>. Row 1 of each tab is its header. A tab's key column (<code>id</code> unless you pick another) finds single rows; a tab without one can only be listed.</p>
   {{if .Tabs}}
   <div class="table-wrap"><table>
-    <tr><th>Tab</th><th>Allowed ops</th><th>Hidden columns</th><th></th></tr>
+    <tr><th>Tab</th><th>Allowed ops</th><th>Hidden columns</th><th>Key column</th><th></th></tr>
     {{range $i, $t := .Tabs}}{{$f := printf "tab-%s-%d" $sheet $i}}
     <tr>
       <td><strong>{{.Name}}</strong></td>
       <td><div class="chips">{{range $.AllOps}}<label class="chip"><input type="checkbox" form="{{$f}}" name="ops" value="{{.}}"{{if has $t.Ops .}} checked{{end}}> {{.}}</label>{{end}}</div></td>
       <td><input form="{{$f}}" name="hidden" value="{{.Hidden}}" placeholder="cost, notes" aria-label="Hidden columns for {{.Name}}"></td>
+      <td><input form="{{$f}}" name="key" value="{{.Key}}" placeholder="id" size="8" aria-label="Key column for {{.Name}}"></td>
       <td class="right"><form id="{{$f}}" class="tab-form" method="post" action="/app/tabs">
         <input type="hidden" name="sheet" value="{{$sheet}}"><input type="hidden" name="tab" value="{{.Name}}">
         <button>Save</button>

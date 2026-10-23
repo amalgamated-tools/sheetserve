@@ -34,22 +34,19 @@ func (a *API) openAPIHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) openAPI(ctx context.Context, key *config.Key) obj {
 	schemas := obj{"Error": object(obj{"error": obj{"type": "string"}}, "error")}
 	paths := obj{}
-	a.eachTab(ctx, key, func(name, sheet, tab string, ops, cols []string) {
-		// Rows carry every visible column (id included) with raw cell values, so leave types open.
-		row, fields := obj{}, obj{}
+	a.eachTab(ctx, key, func(name, sheet, tab, rowKey string, ops, cols []string) {
+		// Rows carry every visible column (the key included) with raw cell values, so leave types open.
+		row := obj{}
 		for _, c := range cols {
 			row[c] = obj{}
-			if c != "id" {
-				fields[c] = obj{}
-			}
 		}
 		schemas[name] = object(row, cols...)
 		ref := obj{"$ref": "#/components/schemas/" + name}
-		input := obj{"type": "object", "properties": fields, "additionalProperties": false}
+		createInput, updateInput := writeFields(rowKey, cols)
 
 		base := "/v1/" + url.PathEscape(sheet) + "/" + url.PathEscape(tab)
 		coll, item := obj{}, obj{}
-		idParam := []any{obj{"name": "id", "in": "path", "required": true, "schema": obj{"type": "string"}}}
+		idParam := []any{obj{"name": "id", "in": "path", "required": true, "description": "the row's " + rowKey, "schema": obj{"type": "string"}}}
 		for _, op := range ops {
 			switch op {
 			case "read":
@@ -76,13 +73,15 @@ func (a *API) openAPI(ctx context.Context, key *config.Key) obj {
 				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
 					strings.Join(service.FilterOperators(), ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case."
 				coll["get"] = list
-				item["get"] = operation(name+"_get", "Get one row by id", idParam, nil, "200", ref)
+				if rowKey != "" {
+					item["get"] = operation(name+"_get", "Get one row by its "+rowKey, idParam, nil, "200", ref)
+				}
 			case "create":
-				coll["post"] = operation(name+"_create", "Add a row; the id is assigned by the server", nil, input, "201", ref)
+				coll["post"] = operation(name+"_create", "Add a row. "+createNote(rowKey), nil, createInput, "201", ref)
 			case "update":
-				item["patch"] = operation(name+"_update", "Change columns of one row", idParam, input, "200", ref)
+				item["patch"] = operation(name+"_update", "Change columns of one row", idParam, updateInput, "200", ref)
 			case "delete":
-				item["delete"] = operation(name+"_delete", "Delete one row by id", idParam, nil, "200",
+				item["delete"] = operation(name+"_delete", "Delete one row by its "+rowKey, idParam, nil, "200",
 					object(obj{"deleted": obj{"type": "string"}}, "deleted"))
 			}
 		}

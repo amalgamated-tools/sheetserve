@@ -35,16 +35,17 @@ func (a *API) mcpHandler() http.Handler {
 // the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
 func (a *API) mcpServer(ctx context.Context, key *config.Key) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: Version}, nil)
-	a.eachTab(ctx, key, func(name, sheet, tab string, ops, cols []string) {
-		a.addTabTools(srv, key, name, sheet, tab, ops, cols)
+	a.eachTab(ctx, key, func(name, sheet, tab, rowKey string, ops, cols []string) {
+		a.addTabTools(srv, key, name, sheet, tab, rowKey, ops, cols)
 	})
 	return srv
 }
 
 // eachTab calls fn, in sorted order, for every tab key can reach, with a name unique among
-// those tabs, the ops it may perform and its distinct visible columns (including id).
-// Tabs whose header can't be read are skipped.
-func (a *API) eachTab(ctx context.Context, key *config.Key, fn func(name, sheet, tab string, ops, cols []string)) {
+// those tabs, its key column ("" when it has none), the ops it may perform and its distinct
+// visible columns (including the key). A tab without a key column offers only read, which then
+// means listing. Tabs whose header can't be read are skipped.
+func (a *API) eachTab(ctx context.Context, key *config.Key, fn func(name, sheet, tab, rowKey string, ops, cols []string)) {
 	used := map[string]bool{}
 	for _, sheet := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets)) {
 		for _, tab := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets[sheet].Tabs)) {
@@ -61,9 +62,19 @@ func (a *API) eachTab(ctx context.Context, key *config.Key, fn func(name, sheet,
 			}
 			used[name] = true
 			columns, err := a.svc.VisibleColumns(ctx, sheet, tab)
+			var rowKey string
+			if err == nil {
+				rowKey, err = a.svc.Key(ctx, sheet, tab)
+			}
 			if err != nil {
 				slog.WarnContext(ctx, "skipping tab", "sheet", sheet, "tab", tab, "err", err)
 				continue
+			}
+			if rowKey == "" {
+				ops = slices.DeleteFunc(ops, func(op string) bool { return op != "read" })
+				if len(ops) == 0 {
+					continue
+				}
 			}
 			var cols []string
 			for _, c := range columns {
@@ -71,7 +82,7 @@ func (a *API) eachTab(ctx context.Context, key *config.Key, fn func(name, sheet,
 					cols = append(cols, c)
 				}
 			}
-			fn(name, sheet, tab, ops, cols)
+			fn(name, sheet, tab, rowKey, ops, cols)
 		}
 	}
 }
@@ -80,16 +91,39 @@ type idArgs struct {
 	ID string `json:"id"`
 }
 
-func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab string, ops, cols []string) {
-	where := sheet + "/" + tab
-	columns := map[string]any{}
+// writeFields returns the input schemas for creating and updating a row of a tab keyed by rowKey.
+// The server assigns ids, so an "id" key is never sent; any other key is required on create and
+// can't be changed by an update.
+func writeFields(rowKey string, cols []string) (create, update map[string]any) {
+	createCols, updateCols := map[string]any{}, map[string]any{}
 	for _, c := range cols {
-		if c != "id" {
-			columns[c] = map[string]any{}
+		if c != rowKey || rowKey != "id" {
+			createCols[c] = map[string]any{}
+		}
+		if c != rowKey {
+			updateCols[c] = map[string]any{}
 		}
 	}
-	fields := map[string]any{"type": "object", "properties": columns, "additionalProperties": false}
-	idSchema := object(map[string]any{"id": map[string]any{"type": "string"}}, "id")
+	create, update = object(createCols), object(updateCols)
+	if rowKey != "id" {
+		create["required"] = []string{rowKey}
+	}
+	create["additionalProperties"], update["additionalProperties"] = false, false
+	return create, update
+}
+
+// createNote tells a client who sets a new row's key.
+func createNote(rowKey string) string {
+	if rowKey == "id" {
+		return "The id is assigned by the server."
+	}
+	return rowKey + " is required and must be unique."
+}
+
+func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab, rowKey string, ops, cols []string) {
+	where := sheet + "/" + tab
+	createFields, updateFields := writeFields(rowKey, cols)
+	idSchema := object(map[string]any{"id": map[string]any{"type": "string", "description": "the row's " + rowKey}}, "id")
 
 	for _, op := range ops {
 		switch op {
@@ -117,14 +151,16 @@ func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab str
 				) (any, error) {
 					return a.svc.List(ctx, sheet, tab, in.Filter, in.Sort, in.Limit, in.Offset)
 				})
-			addTool(srv, key, name+"_get", "Get one row in "+where+" by id.", idSchema,
-				func(ctx context.Context, in idArgs) (any, error) { return a.svc.Get(ctx, sheet, tab, in.ID) })
+			if rowKey != "" {
+				addTool(srv, key, name+"_get", "Get one row in "+where+" by its "+rowKey+".", idSchema,
+					func(ctx context.Context, in idArgs) (any, error) { return a.svc.Get(ctx, sheet, tab, in.ID) })
+			}
 		case "create":
-			addTool(srv, key, name+"_create", "Add a row to "+where+". The id is assigned by the server.", fields,
+			addTool(srv, key, name+"_create", "Add a row to "+where+". "+createNote(rowKey), createFields,
 				func(ctx context.Context, in map[string]any) (any, error) { return a.svc.Create(ctx, sheet, tab, in) })
 		case "update":
-			addTool(srv, key, name+"_update", "Change columns of one row in "+where+".",
-				object(map[string]any{"id": map[string]any{"type": "string"}, "fields": fields}, "id", "fields"),
+			addTool(srv, key, name+"_update", "Change columns of one row in "+where+", found by its "+rowKey+".",
+				object(map[string]any{"id": idSchema["properties"].(map[string]any)["id"], "fields": updateFields}, "id", "fields"),
 				func(ctx context.Context, in struct {
 					ID     string         `json:"id"`
 					Fields map[string]any `json:"fields"`
@@ -133,7 +169,7 @@ func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab str
 					return a.svc.Update(ctx, sheet, tab, in.ID, in.Fields)
 				})
 		case "delete":
-			addTool(srv, key, name+"_delete", "Delete one row in "+where+" by id.", idSchema,
+			addTool(srv, key, name+"_delete", "Delete one row in "+where+" by its "+rowKey+".", idSchema,
 				func(ctx context.Context, in idArgs) (any, error) {
 					return map[string]string{"deleted": in.ID}, a.svc.Delete(ctx, sheet, tab, in.ID)
 				})

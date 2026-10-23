@@ -45,7 +45,15 @@ mise run run           # or: go run ./cmd/server, with the variables exported
 ```
 
 Sign in, add a spreadsheet from your Drive, and turn on the ops you want for each tab. New tabs start with no ops enabled.
-Then create an API key. Row 1 of each tab must be a header row with an `id` column. The server generates ids for the rows it creates.
+Then create an API key. Row 1 of each tab is its header row.
+
+Each tab has a key column, which identifies a row in `GET`, `PATCH` and `DELETE /v1/<sheet>/<tab>/<key>`. It is `id` unless you
+name another column, such as `email` or `sku`, on the tab's row in the dashboard.
+
+- With `id` as the key, the server generates the id of each row it creates, and clients can't set or change it.
+- With another key, a create must include it and its value must be new. An update can't change it.
+- A key value that more than one row holds returns `409`, so the server never guesses which row you meant.
+- A tab whose header has no key column can only be listed. Its other routes return `403`.
 
 To start from nothing, create a blank spreadsheet in the dashboard instead. List one tab per line with its columns:
 
@@ -97,10 +105,11 @@ A successful create returns `201`. Errors use these status codes:
 
 | Status | Cause |
 |---|---|
-| `400` | An unknown or hidden column, an unknown filter operator, a bad `limit` or `offset`, an `id` field in a create or update, or an update with no fields |
+| `400` | An unknown or hidden column, an unknown filter operator, a bad `limit` or `offset`, an `id` field in a create or update, a create without the tab's key column, a change to a row's key column, or an update with no fields |
 | `401` | A missing or invalid key |
-| `403` | The key or the tab does not allow the operation |
+| `403` | The key or the tab does not allow the operation, or the tab has no key column |
 | `404` | An unknown tab or row |
+| `409` | A create with a key value that exists, or a key value that more than one row holds |
 | `502` | A Google API error |
 
 Error bodies look like `{"error": "..."}`. Google API error details go to the log only.
@@ -160,5 +169,5 @@ CI (`.github/workflows/ci.yml`) runs `mise run check` and `mise run build` on pu
 - Two users who add the same spreadsheet do not share write locks.
 - If a user revokes the app's access in their Google account, their keys return `502` for spreadsheets
   added from Drive until they sign in again. Spreadsheets added through the service account keep working.
-- An update or delete finds its row by id just before it writes. If someone inserts or deletes rows by hand in the sheet at that moment, the write can land on the wrong row.
+- An update or delete finds its row by key just before it writes. If someone inserts or deletes rows by hand in the sheet at that moment, the write can land on the wrong row.
 - Filters read the whole tab. Very large tabs will be slow until the cache has them.
