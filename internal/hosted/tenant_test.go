@@ -242,6 +242,14 @@ func TestDashboardPages(t *testing.T) {
 		}
 	}
 
+	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `<a class="button primary" href="/sheets/new">`) {
+		t.Errorf("sheets page has no create button: %d", s)
+	}
+	s, body := get(t, alice, srv.URL+"/sheets/new", "")
+	if s != 200 || !strings.Contains(body, "<title>New spreadsheet · sheetserve</title>") || !strings.Contains(body, `action="/app/sheets/new"`) ||
+		!strings.Contains(body, `<a href="/sheets" aria-current="page">`) {
+		t.Errorf("new sheet page: %d %s", s, body)
+	}
 	if s, body := get(t, alice, srv.URL+"/keys", ""); s != 200 || !strings.Contains(body, "Add a spreadsheet</a> first") {
 		t.Errorf("keys page with no sheets: %d", s)
 	}
@@ -251,7 +259,7 @@ func TestDashboardPages(t *testing.T) {
 	if s, loc := location("POST", "/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 || loc != "/sheets#sheet-shop" {
 		t.Errorf("save tab: %d %q", s, loc)
 	}
-	s, body := get(t, alice, srv.URL+"/sheets", "")
+	s, body = get(t, alice, srv.URL+"/sheets", "")
 	if s != 200 || !strings.Contains(body, `<title>Spreadsheets · sheetserve</title>`) || !strings.Contains(body, `id="sheet-shop"`) || strings.Contains(body, "New key") {
 		t.Errorf("sheets page: %d %s", s, body)
 	}
@@ -500,7 +508,8 @@ func TestCreateSheet(t *testing.T) {
 		t.Errorf("taken name: %d, %d creates: %s", s, fs.created, body)
 	}
 	bad := url.Values{"name": {"other"}, "schema": {"Orders: a, a"}}
-	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) || !strings.Contains(body, ">Orders: a, a</textarea>") {
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) || !strings.Contains(body, ">Orders: a, a</textarea>") ||
+		!strings.Contains(body, "<title>New spreadsheet · sheetserve</title>") {
 		t.Errorf("bad schema: %d %s", s, body)
 	}
 }

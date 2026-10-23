@@ -53,12 +53,13 @@ type user struct {
 
 // The dashboard's pages. A form posts to /app/... and lands back on the page it's on.
 const (
-	sheetsPage = "/sheets"
-	keysPage   = "/keys"
+	sheetsPage   = "/sheets"
+	newSheetPage = "/sheets/new"
+	keysPage     = "/keys"
 )
 
 type page struct {
-	Path                                   string // sheetsPage or keysPage
+	Path                                   string // sheetsPage, newSheetPage or keysPage
 	Email, Error, NewKey, PickerKey, AppID string
 	SAEmail                                string       // set when the server has a service account
 	NewSheet                               newSheetForm // refilled after a failed create
@@ -69,10 +70,21 @@ type page struct {
 
 // Title names the page in the browser tab.
 func (p page) Title() string {
-	if p.Path == keysPage {
+	switch p.Path {
+	case keysPage:
 		return "API keys"
+	case newSheetPage:
+		return "New spreadsheet"
 	}
 	return "Spreadsheets"
+}
+
+// Section is the nav entry the page belongs under.
+func (p page) Section() string {
+	if p.Path == keysPage {
+		return keysPage
+	}
+	return sheetsPage
 }
 
 type sheetView struct {
@@ -105,7 +117,7 @@ func (m *multiTenant) web() http.Handler {
 			slog.Error("template", "err", err)
 		}
 	})
-	for _, path := range []string{sheetsPage, keysPage} {
+	for _, path := range []string{sheetsPage, newSheetPage, keysPage} {
 		mux.HandleFunc("GET "+path, m.signedIn(func(w http.ResponseWriter, r *http.Request, u user) {
 			m.render(w, r, u, page{Path: path}, http.StatusOK)
 		}))
@@ -217,7 +229,9 @@ func (m *multiTenant) saveSheet(w http.ResponseWriter, r *http.Request, u user, 
 // picked one. drive.file covers files the app creates, so the user needn't pick it.
 func (m *multiTenant) createSheet(w http.ResponseWriter, r *http.Request, u user) {
 	form := newSheetForm{Name: r.FormValue("name"), Title: strings.TrimSpace(r.FormValue("title")), Schema: r.FormValue("schema")}
-	fail := func(status int, msg string) { m.render(w, r, u, page{Path: sheetsPage, Error: msg, NewSheet: form}, status) }
+	fail := func(status int, msg string) {
+		m.render(w, r, u, page{Path: newSheetPage, Error: msg, NewSheet: form}, status)
+	}
 	if !sheetName.MatchString(form.Name) {
 		fail(http.StatusBadRequest, "name must be letters, digits, - or _")
 		return
