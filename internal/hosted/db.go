@@ -162,10 +162,10 @@ func userConfig(ctx context.Context, q querier, userID int64, global *config.Con
 		return nil
 	})
 	if err == nil {
-		err = scan(ctx, q, `SELECT sheet, tab, ops, hidden FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+		err = scan(ctx, q, `SELECT sheet, tab, ops, hidden, key_column FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 			var sheet, tab, ops, hidden string
 			var rule config.TabRule
-			if err := rows.Scan(&sheet, &tab, &ops, &hidden); err != nil {
+			if err := rows.Scan(&sheet, &tab, &ops, &hidden, &rule.Key); err != nil {
 				return err
 			}
 			if err := errors.Join(json.Unmarshal([]byte(ops), &rule.Ops), json.Unmarshal([]byte(hidden), &rule.Hidden)); err != nil {

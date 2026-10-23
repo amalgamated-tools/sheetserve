@@ -30,7 +30,8 @@ func BadRequest(format string, a ...any) error {
 
 var errNotFound = &APIError{http.StatusNotFound, "row not found"}
 
-// Service maps tabs to rows of objects keyed by the header row. Every tab needs an "id" column.
+// Service maps tabs to rows of objects keyed by the header row. A row is found by the value in
+// the tab's key column; a tab whose header lacks that column can only be listed.
 type Service struct {
 	cfg   *config.Config
 	store store.Store
@@ -43,6 +44,7 @@ type Service struct {
 type snapshot struct {
 	header []string
 	rows   [][]any
+	key    int // index of the key column in header, or -1 when the tab has none
 	at     time.Time
 }
 
@@ -80,9 +82,7 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 		}
 		snap.rows = vals[1:]
 	}
-	if !slices.Contains(snap.header, "id") {
-		return snapshot{}, fmt.Errorf("tab %s has no id column", k)
-	}
+	snap.key = slices.Index(snap.header, s.keyColumn(sheet, tab))
 	if s.cfg.CacheTTL > 0 {
 		s.mu.Lock()
 		s.cache[k] = snap
@@ -106,6 +106,25 @@ func (s *Service) lockTab(sheet, tab string) func() {
 
 func (s *Service) hidden(sheet, tab string) []string {
 	return s.cfg.Spreadsheets[sheet].Tabs[tab].Hidden
+}
+
+func (s *Service) keyColumn(sheet, tab string) string {
+	return s.cfg.Spreadsheets[sheet].Tabs[tab].KeyColumn()
+}
+
+// Header returns the tab's header row, hidden columns included.
+func (s *Service) Header(ctx context.Context, sheet, tab string) ([]string, error) {
+	snap, err := s.load(ctx, sheet, tab, false)
+	return snap.header, err
+}
+
+// Key returns the tab's key column, or "" when its header lacks one and the tab can only be listed.
+func (s *Service) Key(ctx context.Context, sheet, tab string) (string, error) {
+	snap, err := s.load(ctx, sheet, tab, false)
+	if err != nil || snap.key < 0 {
+		return "", err
+	}
+	return snap.header[snap.key], nil
 }
 
 // visibleColumns returns header columns a caller may see, in sheet order.
@@ -140,11 +159,29 @@ func (s *Service) toObject(snap snapshot, row []any, sheet, tab string) map[stri
 	return m
 }
 
-func findID(snap snapshot, id string) int {
-	col := slices.Index(snap.header, "id")
-	return slices.IndexFunc(snap.rows, func(r []any) bool {
-		return col < len(r) && fmt.Sprint(r[col]) == id
-	})
+// find returns the index in snap.rows of the one row whose key column holds val.
+func (s *Service) find(snap snapshot, sheet, tab, val string) (int, error) {
+	if snap.key < 0 {
+		return 0, s.noKey(sheet, tab)
+	}
+	found := -1
+	for i, r := range snap.rows {
+		if snap.key < len(r) && fmt.Sprint(r[snap.key]) == val {
+			if found >= 0 {
+				return 0, &APIError{http.StatusConflict, fmt.Sprintf("more than one row has %s %q; make the key column unique", snap.header[snap.key], val)}
+			}
+			found = i
+		}
+	}
+	if found < 0 {
+		return 0, errNotFound
+	}
+	return found, nil
+}
+
+// noKey refuses an operation on one row of a tab that has no key column.
+func (s *Service) noKey(sheet, tab string) error {
+	return &APIError{http.StatusForbidden, fmt.Sprintf("tab %s/%s has no %q column, so it can only be listed", sheet, tab, s.keyColumn(sheet, tab))}
 }
 
 // filterOps are the operators a filter key can carry as a suffix, as in "qty[gte]". No suffix means eq.
@@ -278,19 +315,24 @@ func (s *Service) Get(ctx context.Context, sheet, tab, id string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	i := findID(snap, id)
-	if i < 0 {
-		return nil, errNotFound
+	i, err := s.find(snap, sheet, tab, id)
+	if err != nil {
+		return nil, err
 	}
 	return s.toObject(snap, snap.rows[i], sheet, tab), nil
 }
 
-// checkFields rejects writes to unknown, hidden, or id columns.
-func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[string]any) error {
+// checkFields rejects writes to unknown or hidden columns, and to the key column unless creating
+// a row on a tab whose key isn't "id". The server assigns ids, and a row's key never changes.
+func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[string]any, creating bool) error {
 	visible := s.visibleColumns(snap, sheet, tab)
+	key := snap.header[snap.key]
 	for _, f := range slices.Sorted(maps.Keys(fields)) {
-		if f == "id" {
+		switch {
+		case f == key && key == "id":
 			return BadRequest("id is assigned by the server")
+		case f == key && !creating:
+			return BadRequest("%s is the tab's key and can't be changed", key)
 		}
 		if !slices.Contains(visible, f) {
 			return BadRequest("unknown column %q", f)
@@ -305,14 +347,28 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkFields(snap, sheet, tab, fields); err != nil {
+	if snap.key < 0 {
+		return nil, s.noKey(sheet, tab)
+	}
+	if err := s.checkFields(snap, sheet, tab, fields, true); err != nil {
 		return nil, err
 	}
 	row := make([]any, len(snap.header))
 	for i, h := range snap.header {
 		row[i] = cellValue(fields[h])
 	}
-	row[slices.Index(snap.header, "id")] = rand.Text()
+	if key := snap.header[snap.key]; key == "id" {
+		row[snap.key] = rand.Text()
+	} else if val := fmt.Sprint(row[snap.key]); val == "" {
+		return nil, BadRequest("%s is the tab's key and is required", key)
+	} else {
+		switch _, err := s.find(snap, sheet, tab, val); {
+		case err == nil:
+			return nil, &APIError{http.StatusConflict, fmt.Sprintf("a row with %s %q already exists", key, val)}
+		case err != errNotFound:
+			return nil, err
+		}
+	}
 	if err := s.store.Append(ctx, s.cfg.Spreadsheets[sheet].ID, tab, row); err != nil {
 		return nil, err
 	}
@@ -330,12 +386,15 @@ func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkFields(snap, sheet, tab, fields); err != nil {
+	if snap.key < 0 {
+		return nil, s.noKey(sheet, tab)
+	}
+	if err := s.checkFields(snap, sheet, tab, fields, false); err != nil {
 		return nil, err
 	}
-	i := findID(snap, id)
-	if i < 0 {
-		return nil, errNotFound
+	i, err := s.find(snap, sheet, tab, id)
+	if err != nil {
+		return nil, err
 	}
 	row := make([]any, len(snap.header))
 	copy(row, snap.rows[i])
@@ -356,9 +415,9 @@ func (s *Service) Delete(ctx context.Context, sheet, tab, id string) error {
 	if err != nil {
 		return err
 	}
-	i := findID(snap, id)
-	if i < 0 {
-		return errNotFound
+	i, err := s.find(snap, sheet, tab, id)
+	if err != nil {
+		return err
 	}
 	return s.store.DeleteRow(ctx, s.cfg.Spreadsheets[sheet].ID, tab, i+2)
 }
