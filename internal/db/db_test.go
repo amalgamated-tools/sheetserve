@@ -1,4 +1,4 @@
-package hosted
+package db
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 // A new database runs every migration, and each one rolls back and reapplies cleanly.
 func TestMigrations(t *testing.T) {
-	db, err := openDB(t.TempDir()+"/new.db", make([]byte, 32))
+	db, err := Open(t.TempDir()+"/new.db", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,11 +53,11 @@ func TestSchemaUpgrade(t *testing.T) {
 	}
 	_ = old.Close()
 	for range 2 { // the second open must find the column already there
-		db, err := openDB(path, make([]byte, 32))
+		db, err := Open(path, make([]byte, 32))
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := userConfig(context.Background(), db, 1, &config.Config{})
+		cfg, err := UserConfig(context.Background(), db, 1, &config.Config{})
 		_ = db.Close()
 		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" || cfg.Spreadsheets["shop"].ServiceAccount {
 			t.Fatalf("upgraded config: %+v %v", cfg, err)

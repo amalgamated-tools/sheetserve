@@ -1,4 +1,4 @@
-package hosted
+package db
 
 import (
 	"context"
@@ -29,8 +29,8 @@ type DB struct {
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// openDB opens (creating if needed) the SQLite file at path. secret is the 32-byte AES key for refresh tokens.
-func openDB(path string, secret []byte) (*DB, error) {
+// Open opens (creating if needed) the SQLite file at path. secret is the 32-byte AES key for refresh tokens.
+func Open(path string, secret []byte) (*DB, error) {
 	block, err := aes.NewCipher(secret)
 	if err != nil {
 		return nil, err
@@ -81,8 +81,8 @@ func (d *DB) decrypt(sealed []byte) (string, error) {
 	return string(plain), err
 }
 
-// upsertUser records a Google sign-in. An empty refreshToken keeps the stored one.
-func (d *DB) upsertUser(ctx context.Context, sub, email, refreshToken string) (int64, error) {
+// UpsertUser records a Google sign-in. An empty refreshToken keeps the stored one.
+func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (int64, error) {
 	var sealed []byte
 	if refreshToken != "" {
 		sealed = d.encrypt(refreshToken)
@@ -95,7 +95,7 @@ func (d *DB) upsertUser(ctx context.Context, sub, email, refreshToken string) (i
 	return id, err
 }
 
-func (d *DB) refreshToken(ctx context.Context, userID int64) (string, error) {
+func (d *DB) RefreshToken(ctx context.Context, userID int64) (string, error) {
 	var sealed []byte
 	if err := d.QueryRowContext(ctx, `SELECT refresh_token FROM users WHERE id = ?`, userID).Scan(&sealed); err != nil {
 		return "", err
@@ -106,22 +106,22 @@ func (d *DB) refreshToken(ctx context.Context, userID int64) (string, error) {
 	return d.decrypt(sealed)
 }
 
-const sessionTTL = 30 * 24 * time.Hour
+const SessionTTL = 30 * 24 * time.Hour
 
-// newSession returns a session token for userID; only its hash is stored.
-func (d *DB) newSession(ctx context.Context, userID int64) (string, error) {
+// NewSession returns a session token for userID; only its hash is stored.
+func (d *DB) NewSession(ctx context.Context, userID int64) (string, error) {
 	tok := rand.Text()
 	now := time.Now()
 	if _, err := d.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, now.Unix()); err != nil {
 		return "", err
 	}
 	_, err := d.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)`,
-		config.HashKey(tok), userID, now.Add(sessionTTL).Unix())
+		config.HashKey(tok), userID, now.Add(SessionTTL).Unix())
 	return tok, err
 }
 
-// sessionUser returns the user behind a live session token, or ok=false.
-func (d *DB) sessionUser(ctx context.Context, tok string) (id int64, email string, ok bool, err error) {
+// SessionUser returns the user behind a live session token, or ok=false.
+func (d *DB) SessionUser(ctx context.Context, tok string) (id int64, email string, ok bool, err error) {
 	err = d.QueryRowContext(ctx, `SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`, config.HashKey(tok), time.Now().Unix()).Scan(&id, &email)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -130,13 +130,13 @@ func (d *DB) sessionUser(ctx context.Context, tok string) (id int64, email strin
 	return id, email, err == nil, err
 }
 
-func (d *DB) deleteSession(ctx context.Context, tok string) error {
+func (d *DB) DeleteSession(ctx context.Context, tok string) error {
 	_, err := d.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, config.HashKey(tok))
 	return err
 }
 
-// keyUser returns the owner of an API key hash, or ok=false.
-func (d *DB) keyUser(ctx context.Context, hash string) (id int64, ok bool, err error) {
+// KeyUser returns the owner of an API key hash, or ok=false.
+func (d *DB) KeyUser(ctx context.Context, hash string) (id int64, ok bool, err error) {
 	err = d.QueryRowContext(ctx, `SELECT user_id FROM api_keys WHERE hash = ?`, hash).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
@@ -144,15 +144,15 @@ func (d *DB) keyUser(ctx context.Context, hash string) (id int64, ok bool, err e
 	return id, err == nil, err
 }
 
-type querier interface {
+type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// userConfig builds userID's Config from the database, with the server-wide settings from global.
-func userConfig(ctx context.Context, q querier, userID int64, global *config.Config) (*config.Config, error) {
+// UserConfig builds userID's Config from the database, with the server-wide settings from global.
+func UserConfig(ctx context.Context, q Querier, userID int64, global *config.Config) (*config.Config, error) {
 	cfg := &config.Config{Listen: global.Listen, CacheTTL: global.CacheTTL, CORSOrigins: global.CORSOrigins,
 		Spreadsheets: map[string]config.Spreadsheet{}}
-	err := scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+	err := Scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 		var name, id string
 		var sa bool
 		if err := rows.Scan(&name, &id, &sa); err != nil {
@@ -162,7 +162,7 @@ func userConfig(ctx context.Context, q querier, userID int64, global *config.Con
 		return nil
 	})
 	if err == nil {
-		err = scan(ctx, q, `SELECT sheet, tab, ops, hidden, key_column FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+		err = Scan(ctx, q, `SELECT sheet, tab, ops, hidden, key_column FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 			var sheet, tab, ops, hidden string
 			var rule config.TabRule
 			if err := rows.Scan(&sheet, &tab, &ops, &hidden, &rule.Key); err != nil {
@@ -176,7 +176,7 @@ func userConfig(ctx context.Context, q querier, userID int64, global *config.Con
 		})
 	}
 	if err == nil {
-		err = scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+		err = Scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 			var k config.Key
 			var tabs, ops string
 			if err := rows.Scan(&k.Hash, &k.Name, &tabs, &ops); err != nil {
@@ -198,7 +198,7 @@ func userConfig(ctx context.Context, q querier, userID int64, global *config.Con
 	return cfg, nil
 }
 
-func scan(ctx context.Context, q querier, query string, userID int64, fn func(*sql.Rows) error) error {
+func Scan(ctx context.Context, q Querier, query string, userID int64, fn func(*sql.Rows) error) error {
 	rows, err := q.QueryContext(ctx, query, userID)
 	if err != nil {
 		return err
@@ -212,8 +212,8 @@ func scan(ctx context.Context, q querier, query string, userID int64, fn func(*s
 	return rows.Err()
 }
 
-// snapshot runs fn in a read-only transaction, so all its reads see one consistent state.
-func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
+// Snapshot runs fn in a read-only transaction, so all its reads see one consistent state.
+func (d *DB) Snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
@@ -222,9 +222,9 @@ func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return fn(tx)
 }
 
-// update runs fn in a transaction and commits only if userID's resulting config still validates,
+// Update runs fn in a transaction and commits only if userID's resulting config still validates,
 // so validate() checks every dashboard change.
-func (d *DB) update(ctx context.Context, userID int64, global *config.Config, fn func(tx *sql.Tx) error) error {
+func (d *DB) Update(ctx context.Context, userID int64, global *config.Config, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -233,14 +233,14 @@ func (d *DB) update(ctx context.Context, userID int64, global *config.Config, fn
 	if err := fn(tx); err != nil {
 		return err
 	}
-	if _, err := userConfig(ctx, tx, userID, global); err != nil {
+	if _, err := UserConfig(ctx, tx, userID, global); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// jsonList encodes a string list for the JSON columns; nil becomes [].
-func jsonList(s []string) string {
+// JSONList encodes a string list for the JSON columns; nil becomes [].
+func JSONList(s []string) string {
 	if s == nil {
 		return "[]"
 	}

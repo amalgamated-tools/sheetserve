@@ -17,6 +17,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
@@ -26,7 +27,7 @@ import (
 // with the server's service account for spreadsheets added that way.
 type multiTenant struct {
 	global      *config.Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from db
-	db          *DB
+	db          *db.DB
 	oauth       *oauth2.Config
 	userinfoURL string
 	secure      bool   // set Secure on cookies (base URL is https)
@@ -46,9 +47,9 @@ type tenant struct {
 	svc *service.Service
 }
 
-func newMultiTenant(global *config.Config, db *DB, oauth *oauth2.Config) *multiTenant {
+func newMultiTenant(global *config.Config, d *db.DB, oauth *oauth2.Config) *multiTenant {
 	m := &multiTenant{
-		global: global, db: db, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
+		global: global, db: d, oauth: oauth, tenants: map[int64]*tenant{}, locks: map[int64]*sync.Map{},
 		userinfoURL: "https://openidconnect.googleapis.com/v1/userinfo",
 		secure:      strings.HasPrefix(oauth.RedirectURL, "https://"),
 	}
@@ -63,7 +64,7 @@ func newMultiTenant(global *config.Config, db *DB, oauth *oauth2.Config) *multiT
 }
 
 func (m *multiTenant) tokenSource(userID int64) (oauth2.TokenSource, error) {
-	rt, err := m.db.refreshToken(context.Background(), userID)
+	rt, err := m.db.RefreshToken(context.Background(), userID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +86,7 @@ func (m *multiTenant) routes() http.Handler {
 
 // serveAPI hands the request to the API of the user who owns the bearer key.
 func (m *multiTenant) serveAPI(w http.ResponseWriter, r *http.Request) {
-	userID, ok, err := m.db.keyUser(r.Context(), config.HashKey(api.Bearer(r)))
+	userID, ok, err := m.db.KeyUser(r.Context(), config.HashKey(api.Bearer(r)))
 	var t *tenant
 	if err == nil && ok {
 		t, err = m.tenant(r.Context(), userID)
@@ -109,8 +110,8 @@ func (m *multiTenant) tenant(ctx context.Context, userID int64) (*tenant, error)
 		return t, nil
 	}
 	var cfg *config.Config
-	err := m.db.snapshot(ctx, func(tx *sql.Tx) (err error) {
-		cfg, err = userConfig(ctx, tx, userID, m.global)
+	err := m.db.Snapshot(ctx, func(tx *sql.Tx) (err error) {
+		cfg, err = db.UserConfig(ctx, tx, userID, m.global)
 		return err
 	})
 	if err != nil {
@@ -225,14 +226,14 @@ func (m *multiTenant) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in failed", http.StatusBadGateway)
 		return
 	}
-	sess, err := m.db.newSession(r.Context(), userID)
+	sess, err := m.db.NewSession(r.Context(), userID)
 	if err != nil {
 		slog.Error("session", "err", err)
 		http.Error(w, "sign-in failed", http.StatusInternalServerError)
 		return
 	}
 	m.invalidate(userID) // pick up the new refresh token
-	http.SetCookie(w, m.cookie("session", sess, int(sessionTTL.Seconds())))
+	http.SetCookie(w, m.cookie("session", sess, int(db.SessionTTL.Seconds())))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -251,7 +252,7 @@ func (m *multiTenant) signIn(ctx context.Context, code, verifier string) (int64,
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || resp.StatusCode != http.StatusOK || info.Sub == "" {
 		return 0, fmt.Errorf("userinfo: status %d, err %v", resp.StatusCode, err)
 	}
-	return m.db.upsertUser(ctx, info.Sub, info.Email, tok.RefreshToken)
+	return m.db.UpsertUser(ctx, info.Sub, info.Email, tok.RefreshToken)
 }
 
 // currentUser returns the signed-in user, or ok=false.
@@ -260,7 +261,7 @@ func (m *multiTenant) currentUser(r *http.Request) (id int64, email string, ok b
 	if err != nil {
 		return 0, "", false
 	}
-	id, email, ok, err = m.db.sessionUser(r.Context(), c.Value)
+	id, email, ok, err = m.db.SessionUser(r.Context(), c.Value)
 	if err != nil {
 		slog.Error("session", "err", err)
 	}
@@ -269,7 +270,7 @@ func (m *multiTenant) currentUser(r *http.Request) (id int64, email string, ok b
 
 func (m *multiTenant) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("session"); err == nil {
-		if err := m.db.deleteSession(r.Context(), c.Value); err != nil {
+		if err := m.db.DeleteSession(r.Context(), c.Value); err != nil {
 			slog.Error("logout", "err", err)
 		}
 	}

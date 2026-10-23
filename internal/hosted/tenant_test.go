@@ -15,10 +15,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
-	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 type fakeStore struct {
@@ -74,16 +76,16 @@ func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
 
 func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptest.Server) {
 	t.Helper()
-	db, err := openDB(t.TempDir()+"/test.db", make([]byte, 32))
+	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	global := &config.Config{}
 	if err := global.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	m := newMultiTenant(global, db, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"})
+	m := newMultiTenant(global, d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"})
 	m.newStore = func(int64) (store.Store, error) { return sheetStore, nil }
 	srv := httptest.NewServer(m.routes())
 	t.Cleanup(srv.Close)
@@ -99,11 +101,11 @@ func browser(t *testing.T) *http.Client {
 func signInAs(t *testing.T, m *multiTenant, srv *httptest.Server, sub string) *http.Client {
 	t.Helper()
 	ctx := context.Background()
-	id, err := m.db.upsertUser(ctx, sub, sub+"@example.com", "rt-"+sub)
+	id, err := m.db.UpsertUser(ctx, sub, sub+"@example.com", "rt-"+sub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := m.db.newSession(ctx, id)
+	sess, err := m.db.NewSession(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +422,7 @@ func TestHostedSignIn(t *testing.T) {
 	if strings.Contains(string(sealed), "rt-new") {
 		t.Error("refresh token stored in plain text")
 	}
-	if rt, err := m.db.refreshToken(context.Background(), id); err != nil || rt != "rt-new" {
+	if rt, err := m.db.RefreshToken(context.Background(), id); err != nil || rt != "rt-new" {
 		t.Errorf("refresh token: %q %v", rt, err)
 	}
 }
@@ -435,7 +437,7 @@ func must[T any](v T, err error) T {
 // A rebuilt tenant shares tab write locks with the one it replaced, which may still be serving requests.
 func TestTenantRebuildKeepsLocks(t *testing.T) {
 	m, _ := newTestHosted(t, &fakeStore{})
-	id, err := m.db.upsertUser(context.Background(), "dave", "dave@example.com", "rt")
+	id, err := m.db.UpsertUser(context.Background(), "dave", "dave@example.com", "rt")
 	if err != nil {
 		t.Fatal(err)
 	}

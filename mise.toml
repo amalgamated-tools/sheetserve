@@ -47,9 +47,9 @@ description = "Tidy go.mod and go.sum"
 run = "go mod tidy"
 
 [tasks."db:new"]
-description = "Create a new SQL migration in internal/hosted/migrations"
+description = "Create a new SQL migration in internal/db/migrations"
 usage = 'arg "<name>" help="Migration name, such as add_roles"'
-run = 'goose -dir internal/hosted/migrations -s create "$usage_name" sql'
+run = 'goose -dir internal/db/migrations -s create "$usage_name" sql'
 
 [tasks.check]
 description = "Run vet, lint and tests"

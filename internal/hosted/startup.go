@@ -11,10 +11,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
-	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 // New sets up the server: Google sign-in, with each user's spreadsheets and keys kept in SQLite.
@@ -40,11 +42,11 @@ func New(cfg *config.Config) (http.Handler, error) {
 	if err != nil || len(secret) != 32 {
 		return nil, errors.New("SHEETSERVE_SECRET must be 32 random bytes, base64 (openssl rand -base64 32)")
 	}
-	db, err := openDB(cmp.Or(os.Getenv("SHEETSERVE_DB"), "sheetserve.db"), secret)
+	d, err := db.Open(cmp.Or(os.Getenv("SHEETSERVE_DB"), "sheetserve.db"), secret)
 	if err != nil {
 		return nil, err
 	}
-	m := newMultiTenant(cfg, db, &oauth2.Config{
+	m := newMultiTenant(cfg, d, &oauth2.Config{
 		ClientID:     env["GOOGLE_CLIENT_ID"],
 		ClientSecret: env["GOOGLE_CLIENT_SECRET"],
 		Endpoint:     google.Endpoint,
