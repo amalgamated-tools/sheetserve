@@ -3,3 +3,4 @@ service-account*.json
 sheetserve.db*
 .env
 config.yaml
+tmp/
