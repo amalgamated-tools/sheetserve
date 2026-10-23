@@ -9,7 +9,6 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
-	"github.com/amalgamated-tools/sheetserve/internal/hosted"
 )
 
 func Main() {
@@ -24,7 +23,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	h, err := hosted.New(cfg)
+	h, err := newHandler(cfg)
 	if err != nil {
 		return err
 	}
