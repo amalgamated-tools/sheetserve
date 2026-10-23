@@ -127,7 +127,7 @@
 {{range .Sheets}}{{$sheet := .Name}}
 <section class="card">
   <div class="card-head">
-    <div><h3>{{.Name}}</h3> <small>{{.Title}}</small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
+    <div><h3>{{.Name}}</h3> <small><a href="https://docs.google.com/spreadsheets/d/{{.GoogleID}}/edit" target="_blank" rel="noopener" title="Open in Google Sheets">{{.Title}} ↗</a></small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
     <form class="inline" method="post" action="/app/sheets/delete" data-confirm="Remove {{.Name}}? Keys scoped to it stop working.">
       <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Remove</button>
     </form>

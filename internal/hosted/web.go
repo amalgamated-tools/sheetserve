@@ -62,6 +62,7 @@ type page struct {
 
 type sheetView struct {
 	Name, Title    string
+	GoogleID       string // for the link to open it in Google Sheets
 	ServiceAccount bool
 	Tabs           []tabView
 }
@@ -410,9 +411,9 @@ func (m *multiTenant) render(w http.ResponseWriter, r *http.Request, u user, p p
 // or a sheet added between the reads would leave its tabs without a sheet.
 func (m *multiTenant) load(ctx context.Context, q querier, userID int64, p *page) error {
 	p.TabSpecs = []string{"*"}
-	err := scan(ctx, q, `SELECT name, title, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+	err := scan(ctx, q, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 		var s sheetView
-		if err := rows.Scan(&s.Name, &s.Title, &s.ServiceAccount); err != nil {
+		if err := rows.Scan(&s.Name, &s.Title, &s.GoogleID, &s.ServiceAccount); err != nil {
 			return err
 		}
 		p.Sheets = append(p.Sheets, s)

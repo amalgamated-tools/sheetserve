@@ -153,6 +153,9 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 {
 		t.Fatalf("add sheet: %d %s", s, body)
 	}
+	if s, body := get(t, alice, srv.URL+"/", ""); s != 200 || !strings.Contains(body, `<a href="https://docs.google.com/spreadsheets/d/SS/edit" target="_blank" rel="noopener"`) {
+		t.Errorf("dashboard has no link to the spreadsheet: %d", s)
+	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 {
 		t.Fatalf("save tab: %d %s", s, body)
 	}
