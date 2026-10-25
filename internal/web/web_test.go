@@ -1,9 +1,7 @@
-package hosted
+package web
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,10 +13,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
-	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
+
+	"github.com/amalgamated-tools/sheetserve/internal/auth"
+	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
+	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
 )
 
 type fakeStore struct {
@@ -72,22 +74,36 @@ func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
 	return out, nil
 }
 
-func newTestHosted(t *testing.T, sheetStore store.Store) (*multiTenant, *httptest.Server) {
+// failingStore fails every call.
+type failingStore struct{ err error }
+
+func (e failingStore) Read(context.Context, string, string) ([][]any, error)            { return nil, e.err }
+func (e failingStore) Append(context.Context, string, string, []any) error              { return e.err }
+func (e failingStore) SetCells(context.Context, string, string, int, map[int]any) error { return e.err }
+func (e failingStore) DeleteRow(context.Context, string, string, int) error             { return e.err }
+func (e failingStore) Tabs(context.Context, string) ([]string, error)                   { return nil, e.err }
+
+func newTestDashboard(t *testing.T, sheetStore store.Store) (*Dashboard, *httptest.Server) {
 	t.Helper()
-	db, err := openDB(t.TempDir()+"/test.db", make([]byte, 32))
+	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	global := &config.Config{}
 	if err := global.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	m := newMultiTenant(global, db, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"})
-	m.newStore = func(int64) (store.Store, error) { return sheetStore, nil }
-	srv := httptest.NewServer(m.routes())
+	tenants := &tenancy.Tenants{DB: d, Global: global,
+		NewStore: func(int64) (store.Store, error) { return sheetStore, nil }}
+	dash := &Dashboard{DB: d, Auth: auth.New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"}), Tenants: tenants}
+	// The API routes too, so tests can use the keys they create.
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", tenants)
+	mux.Handle("/", dash.Handler())
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return m, srv
+	return dash, srv
 }
 
 // browser returns a client that keeps cookies and does not follow redirects.
@@ -96,14 +112,14 @@ func browser(t *testing.T) *http.Client {
 	return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-func signInAs(t *testing.T, m *multiTenant, srv *httptest.Server, sub string) *http.Client {
+func signInAs(t *testing.T, dash *Dashboard, srv *httptest.Server, sub string) *http.Client {
 	t.Helper()
 	ctx := context.Background()
-	id, err := m.db.upsertUser(ctx, sub, sub+"@example.com", "rt-"+sub)
+	id, err := dash.DB.UpsertUser(ctx, sub, sub+"@example.com", "rt-"+sub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := m.db.newSession(ctx, id)
+	sess, err := dash.DB.NewSession(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,13 +158,13 @@ func get(t *testing.T, c *http.Client, u, key string) (int, string) {
 
 // A signed-in user adds a sheet, enables a tab, mints a key, and the key reaches the tab;
 // settings that would break a key are refused, and a revoked key stops working.
-func TestHostedDashboardAndAPI(t *testing.T) {
+func TestDashboardAndAPI(t *testing.T) {
 	store := &fakeStore{tabs: map[string][][]any{
 		"SS/Orders": {{"id", "item"}, {"o1", "mug"}},
 		"SS/Notes":  {{"id", "text"}},
 	}}
-	m, srv := newTestHosted(t, store)
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, store)
+	alice := signInAs(t, dash, srv, "alice")
 
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 {
 		t.Fatalf("add sheet: %d %s", s, body)
@@ -182,7 +198,7 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 		t.Errorf("deleting a sheet a key uses: %d %s", s, body)
 	}
 
-	bob := signInAs(t, m, srv, "bob")
+	bob := signInAs(t, dash, srv, "bob")
 	for _, page := range []string{"/sheets", "/keys"} {
 		if _, body := get(t, bob, srv.URL+page, ""); strings.Contains(body, "shop") {
 			t.Errorf("bob sees alice's sheet on %s", page)
@@ -216,8 +232,8 @@ func TestHostedDashboardAndAPI(t *testing.T) {
 // The dashboard is two pages; / sends a signed-in user to the first, and each form lands back on
 // the page it's on.
 func TestDashboardPages(t *testing.T) {
-	m, srv := newTestHosted(t, &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "item"}}}})
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "item"}}}})
+	alice := signInAs(t, dash, srv, "alice")
 	location := func(method, path string, form url.Values) (int, string) {
 		t.Helper()
 		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(form.Encode()))
@@ -287,8 +303,8 @@ func TestDashboardPages(t *testing.T) {
 func TestServiceAccountSheets(t *testing.T) {
 	userStore := &fakeStore{tabs: map[string][][]any{"MINE/Orders": {{"id", "item"}, {"o1", "mug"}}}}
 	saStore := &fakeStore{tabs: map[string][][]any{"SHARED/Log": {{"id", "msg"}, {"l1", "hello"}}}}
-	m, srv := newTestHosted(t, userStore)
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, userStore)
+	alice := signInAs(t, dash, srv, "alice")
 
 	if _, body := get(t, alice, srv.URL+"/sheets", ""); strings.Contains(body, "Add by URL") {
 		t.Error("URL form shown without a service account")
@@ -297,7 +313,7 @@ func TestServiceAccountSheets(t *testing.T) {
 		t.Errorf("add by URL without a service account: %d %s", s, body)
 	}
 
-	m.saStore, m.saEmail = saStore, "sa@proj.iam.gserviceaccount.com"
+	dash.Tenants.SAStore, dash.SAEmail = saStore, "sa@proj.iam.gserviceaccount.com"
 	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
 		t.Error("URL form does not name the service account")
 	}
@@ -332,8 +348,8 @@ func TestServiceAccountSheets(t *testing.T) {
 	}
 
 	// Without the user's Google token, the service account sheet keeps working.
-	m.newStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
-	m.invalidate(1)
+	dash.Tenants.NewStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
+	dash.Tenants.Invalidate(1)
 	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 {
 		t.Errorf("service account sheet without user token: %d", s)
 	}
@@ -342,9 +358,9 @@ func TestServiceAccountSheets(t *testing.T) {
 	}
 
 	// If the server loses its service account, only those sheets fail.
-	m.newStore = func(int64) (store.Store, error) { return userStore, nil }
-	m.saStore = nil
-	m.invalidate(1)
+	dash.Tenants.NewStore = func(int64) (store.Store, error) { return userStore, nil }
+	dash.Tenants.SAStore = nil
+	dash.Tenants.Invalidate(1)
 	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 502 {
 		t.Errorf("service account sheet with no service account: %d", s)
 	}
@@ -366,113 +382,13 @@ func TestSpreadsheetID(t *testing.T) {
 	}
 }
 
-// The OAuth callback checks state, stores the refresh token encrypted, and starts a session.
-func TestHostedSignIn(t *testing.T) {
-	m, srv := newTestHosted(t, &fakeStore{})
-	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/token":
-			if r.FormValue("code") != "good-code" || r.FormValue("code_verifier") == "" {
-				http.Error(w, "bad code", 400)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "refresh_token": "rt-new", "expires_in": 3600})
-		case "/userinfo":
-			if r.Header.Get("Authorization") != "Bearer at" {
-				http.Error(w, "no token", http.StatusUnauthorized)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
-		}
-	}))
-	defer google.Close()
-	m.oauth.Endpoint = oauth2.Endpoint{AuthURL: google.URL + "/auth", TokenURL: google.URL + "/token"}
-	m.userinfoURL = google.URL + "/userinfo"
-
-	c := browser(t)
-	resp, err := c.Get(srv.URL + "/login")
-	if err != nil {
-		t.Fatal(err)
-	}
-	loc, _ := url.Parse(resp.Header.Get("Location"))
-	if q := loc.Query(); q.Get("access_type") != "offline" || q.Get("code_challenge") == "" || q.Get("state") == "" {
-		t.Fatalf("auth url: %s", loc)
-	}
-
-	if s, _ := get(t, c, srv.URL+"/auth/callback?code=good-code&state=WRONG", ""); s != 400 {
-		t.Errorf("bad state: %d", s)
-	}
-	resp, _ = c.Get(srv.URL + "/login") // the failed attempt cleared the state cookie
-	state := must(url.Parse(resp.Header.Get("Location"))).Query().Get("state")
-	if s, body := get(t, c, srv.URL+"/auth/callback?code=good-code&state="+url.QueryEscape(state), ""); s != 303 {
-		t.Fatalf("callback: %d %s", s, body)
-	}
-	if _, body := get(t, c, srv.URL+"/sheets", ""); !strings.Contains(body, "carol@example.com") {
-		t.Errorf("dashboard after sign-in: %s", body)
-	}
-
-	var id int64
-	var sealed []byte
-	if err := m.db.QueryRow(`SELECT id, refresh_token FROM users WHERE google_sub = '123'`).Scan(&id, &sealed); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(sealed), "rt-new") {
-		t.Error("refresh token stored in plain text")
-	}
-	if rt, err := m.db.refreshToken(context.Background(), id); err != nil || rt != "rt-new" {
-		t.Errorf("refresh token: %q %v", rt, err)
-	}
-}
-
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// A rebuilt tenant shares tab write locks with the one it replaced, which may still be serving requests.
-func TestTenantRebuildKeepsLocks(t *testing.T) {
-	m, _ := newTestHosted(t, &fakeStore{})
-	id, err := m.db.upsertUser(context.Background(), "dave", "dave@example.com", "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old, err := m.tenant(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.invalidate(id)
-	fresh, err := m.tenant(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if old == fresh || !old.svc.SharesLocks(fresh.svc) {
-		t.Fatal("rebuilt tenant has its own tab locks")
-	}
-}
-
 // When Google rejects a picked spreadsheet, the dashboard shows Google's status and message.
 func TestAddSheetShowsGoogleError(t *testing.T) {
-	m, srv := newTestHosted(t, errStore{&googleapi.Error{Code: 404, Message: "Requested entity was not found."}})
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, failingStore{&googleapi.Error{Code: 404, Message: "Requested entity was not found."}})
+	alice := signInAs(t, dash, srv, "alice")
 	s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}})
 	if s != 502 || !strings.Contains(body, "(404: Requested entity was not found.)") {
 		t.Errorf("add sheet: %d %s", s, body)
-	}
-}
-
-// A project ID in GOOGLE_PROJECT_NUMBER fails at startup instead of breaking every pick.
-func TestNewRejectsProjectID(t *testing.T) {
-	for k, v := range map[string]string{"SHEETSERVE_BASE_URL": "http://localhost:8080",
-		"SHEETSERVE_SECRET": base64.StdEncoding.EncodeToString(make([]byte, 32)), "GOOGLE_CLIENT_ID": "123-x",
-		"GOOGLE_CLIENT_SECRET": "s", "GOOGLE_PICKER_API_KEY": "k", "GOOGLE_PROJECT_NUMBER": "my-project-512320",
-		"SHEETSERVE_DB": t.TempDir() + "/test.db"} {
-		t.Setenv(k, v)
-	}
-	if _, err := New(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
-		t.Errorf("got %v", err)
 	}
 }
 
@@ -480,8 +396,8 @@ func TestNewRejectsProjectID(t *testing.T) {
 // refused before anything is created in Drive, and a bad schema comes back for editing.
 func TestCreateSheet(t *testing.T) {
 	fs := &fakeStore{tabs: map[string][][]any{}}
-	m, srv := newTestHosted(t, fs)
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, fs)
+	alice := signInAs(t, dash, srv, "alice")
 
 	form := url.Values{"name": {"shop"}, "schema": {"Orders: item, qty\n\nNotes"}}
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 303 {
@@ -516,8 +432,8 @@ func TestCreateSheet(t *testing.T) {
 
 // Without a store that can create spreadsheets, the dashboard says so instead of saving a sheet.
 func TestCreateSheetUnsupported(t *testing.T) {
-	m, srv := newTestHosted(t, errStore{errors.New("unused")})
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, failingStore{errors.New("unused")})
+	alice := signInAs(t, dash, srv, "alice")
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}); s != 502 || !strings.Contains(body, "could not create") {
 		t.Errorf("create sheet: %d %s", s, body)
 	}
@@ -545,8 +461,8 @@ func TestParseSchema(t *testing.T) {
 // A tab's key column is checked against its header when saved; left blank, it's id.
 func TestSaveTabKey(t *testing.T) {
 	fs := &fakeStore{tabs: map[string][][]any{"SS/People": {{"email", "name"}, {"ann@example.com", "Ann"}}}}
-	m, srv := newTestHosted(t, fs)
-	alice := signInAs(t, m, srv, "alice")
+	dash, srv := newTestDashboard(t, fs)
+	alice := signInAs(t, dash, srv, "alice")
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"crm"}, "google_id": {"SS"}, "title": {"CRM"}}); s != 303 {
 		t.Fatalf("add sheet: %d %s", s, body)
 	}
