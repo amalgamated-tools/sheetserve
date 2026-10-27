@@ -23,13 +23,15 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/web"
 )
 
-// newHandler sets up the server: Google sign-in, with each user's spreadsheets and keys kept in
+// NewHandler sets up the server: Google sign-in, with each user's spreadsheets and keys kept in
 // SQLite and reached with that user's Google token.
-func newHandler(cfg *config.Config) (http.Handler, error) {
+func NewHandler(cfg *config.Config) (http.Handler, error) {
 	env := map[string]string{"SHEETSERVE_BASE_URL": os.Getenv("RENDER_EXTERNAL_URL")}
 	var missing []string
-	for _, k := range []string{"SHEETSERVE_BASE_URL", "SHEETSERVE_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
-		"GOOGLE_PICKER_API_KEY", "GOOGLE_PROJECT_NUMBER"} {
+	for _, k := range []string{
+		"SHEETSERVE_BASE_URL", "SHEETSERVE_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+		"GOOGLE_PICKER_API_KEY", "GOOGLE_PROJECT_NUMBER",
+	} {
 		if env[k] = cmp.Or(os.Getenv(k), env[k]); env[k] == "" {
 			missing = append(missing, k)
 		}

@@ -23,7 +23,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	h, err := newHandler(cfg)
+	h, err := NewHandler(cfg)
 	if err != nil {
 		return err
 	}

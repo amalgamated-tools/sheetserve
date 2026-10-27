@@ -23,7 +23,7 @@ func TestNewRejectsProjectID(t *testing.T) {
 	} {
 		t.Setenv(k, v)
 	}
-	if _, err := newHandler(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
+	if _, err := NewHandler(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
 		t.Errorf("got %v", err)
 	}
 }
