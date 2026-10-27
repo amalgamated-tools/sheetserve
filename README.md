@@ -36,7 +36,7 @@ Environment variables:
 | `SHEETSERVE_DB` | Optional. SQLite file path. Defaults to `sheetserve.db`. |
 | `SHEETSERVE_CACHE_TTL` | Optional. How long to cache reads, such as `60s`. Defaults to no cache. |
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
-| `PORT` | Optional. Listen port. Defaults to `8080`. |
+| `PORT` | Optional. Listen port. Defaults to `8085`. |
 
 ```sh
 cp .env.example .env   # fill it in
@@ -83,13 +83,13 @@ The server always keeps at least one admin.
 ## API
 
 ```sh
-curl -H "Authorization: Bearer $KEY" localhost:8080/v1/shop/Products
-curl -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?item=mug&limit=10"
-curl -g -H "Authorization: Bearer $KEY" "localhost:8080/v1/shop/Orders?qty[gte]=2&item[contains]=tea&sort=-qty"
-curl -H "Authorization: Bearer $KEY" localhost:8080/v1/shop/Orders/$ID
-curl -H "Authorization: Bearer $KEY" -d '{"item":"mug","qty":2}' localhost:8080/v1/shop/Orders
-curl -H "Authorization: Bearer $KEY" -X PATCH -d '{"qty":3}' localhost:8080/v1/shop/Orders/$ID
-curl -H "Authorization: Bearer $KEY" -X DELETE localhost:8080/v1/shop/Orders/$ID
+curl -H "Authorization: Bearer $KEY" localhost:8085/v1/shop/Products
+curl -H "Authorization: Bearer $KEY" "localhost:8085/v1/shop/Orders?item=mug&limit=10"
+curl -g -H "Authorization: Bearer $KEY" "localhost:8085/v1/shop/Orders?qty[gte]=2&item[contains]=tea&sort=-qty"
+curl -H "Authorization: Bearer $KEY" localhost:8085/v1/shop/Orders/$ID
+curl -H "Authorization: Bearer $KEY" -d '{"item":"mug","qty":2}' localhost:8085/v1/shop/Orders
+curl -H "Authorization: Bearer $KEY" -X PATCH -d '{"qty":3}' localhost:8085/v1/shop/Orders/$ID
+curl -H "Authorization: Bearer $KEY" -X DELETE localhost:8085/v1/shop/Orders/$ID
 ```
 
 Query parameters other than `limit`, `offset` and `sort` are filters. `col=value` matches the value exactly.
@@ -128,7 +128,7 @@ A key used in a browser is visible to anyone who loads the page. Give browser ap
 
 ## MCP
 
-Point an MCP client at `http://host:8080/mcp` and send `Authorization: Bearer <key>`.
+Point an MCP client at `http://host:8085/mcp` and send `Authorization: Bearer <key>`.
 Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and `_delete`, filtered by what the key can do.
 `_list` takes the same filter operators, `sort`, `limit` and `offset` as the REST API.
 

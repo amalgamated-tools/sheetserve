@@ -17,7 +17,7 @@ type Config struct {
 
 // FromEnv reads the server-wide settings: PORT, SHEETSERVE_CACHE_TTL and SHEETSERVE_CORS_ORIGINS.
 func FromEnv() (*Config, error) {
-	c := Config{Listen: ":" + cmp.Or(os.Getenv("PORT"), "8080")}
+	c := Config{Listen: ":" + cmp.Or(os.Getenv("PORT"), "8085")}
 	if ttl := os.Getenv("SHEETSERVE_CACHE_TTL"); ttl != "" {
 		d, err := time.ParseDuration(ttl)
 		if err != nil || d < 0 {

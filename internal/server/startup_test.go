@@ -15,10 +15,12 @@ import (
 
 // A project ID in GOOGLE_PROJECT_NUMBER fails at startup instead of breaking every pick.
 func TestNewRejectsProjectID(t *testing.T) {
-	for k, v := range map[string]string{"SHEETSERVE_BASE_URL": "http://localhost:8080",
-		"SHEETSERVE_SECRET": base64.StdEncoding.EncodeToString(make([]byte, 32)), "GOOGLE_CLIENT_ID": "123-x",
+	for k, v := range map[string]string{
+		"SHEETSERVE_BASE_URL": "http://localhost:8085",
+		"SHEETSERVE_SECRET":   base64.StdEncoding.EncodeToString(make([]byte, 32)), "GOOGLE_CLIENT_ID": "123-x",
 		"GOOGLE_CLIENT_SECRET": "s", "GOOGLE_PICKER_API_KEY": "k", "GOOGLE_PROJECT_NUMBER": "my-project-512320",
-		"SHEETSERVE_DB": t.TempDir() + "/test.db"} {
+		"SHEETSERVE_DB": t.TempDir() + "/test.db",
+	} {
 		t.Setenv(k, v)
 	}
 	if _, err := newHandler(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
@@ -34,8 +36,10 @@ func TestRoutes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	global := &config.Config{}
-	h := routes(global, newApp(global, d, &oauth2.Config{ClientID: "cid",
-		Endpoint: oauth2.Endpoint{AuthURL: "https://accounts.example/auth"}}))
+	h := routes(global, newApp(global, d, &oauth2.Config{
+		ClientID: "cid",
+		Endpoint: oauth2.Endpoint{AuthURL: "https://accounts.example/auth"},
+	}))
 	for _, tc := range []struct {
 		method, path string
 		status       int
