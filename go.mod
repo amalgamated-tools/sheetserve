@@ -4,9 +4,6 @@ go 1.27.0
 
 require (
 	charm.land/log/v2 v2.0.1
-	github.com/go-chi/chi v1.5.5
-	github.com/go-chi/chi/v5 v5.5.0
-	github.com/justinas/alice v1.2.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/stretchr/testify v1.12.1

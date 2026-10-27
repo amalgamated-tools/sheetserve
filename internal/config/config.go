@@ -27,6 +27,7 @@ type Config struct {
 	// Required server-wide settings
 	BaseURL             string // SHEETSERVE_BASE_URL
 	Secret              string // SHEETSERVE_SECRET
+	DecryptedSecret     []byte // decoded SHEETSERVE_SECRET
 	GoogleClientID      string // GOOGLE_CLIENT_ID
 	GoogleClientSecret  string // GOOGLE_CLIENT_SECRET
 	GooglePickerAPIKey  string // GOOGLE_PICKER_API_KEY
@@ -42,7 +43,7 @@ type Config struct {
 // FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL and SHEETSERVE_CORS_ORIGINS.
 func FromEnv() (*Config, error) {
 	c := Config{
-		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), "http://localhost:8085"),
+		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), os.Getenv("RENDER_EXTERNAL_URL"), "http://localhost:8085"),
 		Secret:              cmp.Or(os.Getenv("SHEETSERVE_SECRET"), ""),
 		GoogleClientID:      cmp.Or(os.Getenv("GOOGLE_CLIENT_ID"), ""),
 		GoogleClientSecret:  cmp.Or(os.Getenv("GOOGLE_CLIENT_SECRET"), ""),
@@ -86,6 +87,7 @@ func (c *Config) Validate() error {
 	if err != nil || len(secret) != 32 {
 		return ErrInvalidSecret
 	}
+	c.DecryptedSecret = secret
 	if c.GoogleClientID == "" {
 		return ErrMissingGoogleClientID
 	}

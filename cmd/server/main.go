@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otel"
 	"github.com/amalgamated-tools/sheetserve/internal/server"
 )
@@ -50,11 +49,15 @@ func realMain(ctx context.Context) error {
 	}
 	defer shutdownTelemetry()
 
-	h, err := server.NewHandler(cfg)
+	d, err := db.Open(cfg.DatabaseURL, cfg.DecryptedSecret)
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Addr: ":" + cfg.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}
-	slog.Info("listening", "addr", ":"+cfg.Listen, "version", api.Version)
-	return srv.ListenAndServe()
+	defer func() { _ = d.Close() }()
+
+	s, err := server.New(ctx, cfg, d)
+	if err != nil {
+		return err
+	}
+	return s.Run(ctx)
 }

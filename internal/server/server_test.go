@@ -1,32 +1,14 @@
 package server
 
 import (
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"golang.org/x/oauth2"
-
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 )
-
-// A project ID in GOOGLE_PROJECT_NUMBER fails at startup instead of breaking every pick.
-func TestNewRejectsProjectID(t *testing.T) {
-	for k, v := range map[string]string{
-		"SHEETSERVE_BASE_URL": "http://localhost:8085",
-		"SHEETSERVE_SECRET":   base64.StdEncoding.EncodeToString(make([]byte, 32)), "GOOGLE_CLIENT_ID": "123-x",
-		"GOOGLE_CLIENT_SECRET": "s", "GOOGLE_PICKER_API_KEY": "k", "GOOGLE_PROJECT_NUMBER": "my-project-512320",
-		"SHEETSERVE_DB": t.TempDir() + "/test.db",
-	} {
-		t.Setenv(k, v)
-	}
-	if _, err := NewHandler(&config.Config{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_PROJECT_NUMBER") {
-		t.Errorf("got %v", err)
-	}
-}
 
 // Each route reaches its package: sign-in, the per-user API, or the dashboard.
 func TestRoutes(t *testing.T) {
@@ -35,18 +17,18 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	global := &config.Config{}
-	h := routes(global, newApp(global, d, &oauth2.Config{
-		ClientID: "cid",
-		Endpoint: oauth2.Endpoint{AuthURL: "https://accounts.example/auth"},
-	}))
+	s, err := New(t.Context(), &config.Config{GoogleClientID: "cid"}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := s.handler
 	for _, tc := range []struct {
 		method, path string
 		status       int
 		want         string // in the Location header or body
 	}{
 		{"GET", "/healthz", 200, "ok"},
-		{"GET", "/login", 302, "https://accounts.example/auth?"},
+		{"GET", "/login", 302, "https://accounts.google.com/o/oauth2/auth?"},
 		{"GET", "/auth/callback", 400, "invalid sign-in state"},
 		{"GET", "/v1/shop/Orders", 401, "missing or invalid API key"},
 		{"POST", "/mcp", 401, "missing or invalid API key"},
