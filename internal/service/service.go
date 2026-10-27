@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
@@ -33,8 +33,9 @@ var errNotFound = &APIError{http.StatusNotFound, "row not found"}
 // Service maps tabs to rows of objects keyed by the header row. A row is found by the value in
 // the tab's key column; a tab whose header lacks that column can only be listed.
 type Service struct {
-	cfg   *config.Config
-	store store.Store
+	settings *db.Settings
+	store    store.Store
+	cacheTTL time.Duration
 
 	mu    sync.Mutex
 	cache map[string]snapshot
@@ -48,8 +49,8 @@ type snapshot struct {
 	at     time.Time
 }
 
-func New(cfg *config.Config, store store.Store) *Service {
-	return &Service{cfg: cfg, store: store, cache: map[string]snapshot{}, locks: &sync.Map{}}
+func New(settings *db.Settings, store store.Store, cacheTTL time.Duration) *Service {
+	return &Service{settings: settings, store: store, cacheTTL: cacheTTL, cache: map[string]snapshot{}, locks: &sync.Map{}}
 }
 
 func (s *Service) UseLocks(locks *sync.Map) { s.locks = locks }
@@ -63,15 +64,15 @@ func (s *Service) Tabs(ctx context.Context, spreadsheetID string) ([]string, err
 // TODO: in-process cache and locks; a second replica needs Redis + a distributed lock.
 func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snapshot, error) {
 	k := sheet + "/" + tab
-	if !fresh && s.cfg.CacheTTL > 0 {
+	if !fresh && s.cacheTTL > 0 {
 		s.mu.Lock()
 		snap, ok := s.cache[k]
 		s.mu.Unlock()
-		if ok && time.Since(snap.at) < s.cfg.CacheTTL {
+		if ok && time.Since(snap.at) < s.cacheTTL {
 			return snap, nil
 		}
 	}
-	vals, err := s.store.Read(ctx, s.cfg.Spreadsheets[sheet].ID, tab)
+	vals, err := s.store.Read(ctx, s.settings.Spreadsheets[sheet].ID, tab)
 	if err != nil {
 		return snapshot{}, err
 	}
@@ -83,7 +84,7 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 		snap.rows = vals[1:]
 	}
 	snap.key = slices.Index(snap.header, s.keyColumn(sheet, tab))
-	if s.cfg.CacheTTL > 0 {
+	if s.cacheTTL > 0 {
 		s.mu.Lock()
 		s.cache[k] = snap
 		s.mu.Unlock()
@@ -105,11 +106,11 @@ func (s *Service) lockTab(sheet, tab string) func() {
 }
 
 func (s *Service) hidden(sheet, tab string) []string {
-	return s.cfg.Spreadsheets[sheet].Tabs[tab].Hidden
+	return s.settings.Spreadsheets[sheet].Tabs[tab].Hidden
 }
 
 func (s *Service) keyColumn(sheet, tab string) string {
-	return s.cfg.Spreadsheets[sheet].Tabs[tab].KeyColumn()
+	return s.settings.Spreadsheets[sheet].Tabs[tab].KeyColumn()
 }
 
 // Header returns the tab's header row, hidden columns included.
@@ -369,7 +370,7 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 			return nil, err
 		}
 	}
-	if err := s.store.Append(ctx, s.cfg.Spreadsheets[sheet].ID, tab, row); err != nil {
+	if err := s.store.Append(ctx, s.settings.Spreadsheets[sheet].ID, tab, row); err != nil {
 		return nil, err
 	}
 	return s.toObject(snap, row, sheet, tab), nil
@@ -403,7 +404,7 @@ func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[
 		c := slices.Index(snap.header, f)
 		cells[c], row[c] = cellValue(v), cellValue(v)
 	}
-	if err := s.store.SetCells(ctx, s.cfg.Spreadsheets[sheet].ID, tab, i+2, cells); err != nil {
+	if err := s.store.SetCells(ctx, s.settings.Spreadsheets[sheet].ID, tab, i+2, cells); err != nil {
 		return nil, err
 	}
 	return s.toObject(snap, row, sheet, tab), nil
@@ -419,7 +420,7 @@ func (s *Service) Delete(ctx context.Context, sheet, tab, id string) error {
 	if err != nil {
 		return err
 	}
-	return s.store.DeleteRow(ctx, s.cfg.Spreadsheets[sheet].ID, tab, i+2)
+	return s.store.DeleteRow(ctx, s.settings.Spreadsheets[sheet].ID, tab, i+2)
 }
 
 // cellValue maps JSON null to an empty cell; Sheets skips nil values instead of clearing them.

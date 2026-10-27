@@ -4,7 +4,6 @@ package tenancy
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -12,17 +11,17 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
-// Tenants serves each user's API, reaching Google with that user's credentials, or with the
-// server's service account for spreadsheets added that way. Set the fields before first use.
+// Tenants serves each user's API, reaching Google with that user's credentials. Set the fields
+// before first use.
 type Tenants struct {
 	DB       *db.DB
-	Global   *config.Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from DB
+	Global   *config.Config // server-wide settings; each user's spreadsheets and keys come from DB
 	NewStore func(userID int64) (store.Store, error)
-	SAStore  store.Store // the server's service account; nil when none is configured
 
 	mu      sync.Mutex
 	tenants map[int64]*tenant
@@ -34,11 +33,12 @@ type tenant struct {
 	svc *service.Service
 }
 
-// ServeHTTP hands the request to the API of the user who owns the bearer key.
+// ServeHTTP hands the request to the API of the user who owns the bearer key, if their role lets
+// their keys work.
 func (ts *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	userID, ok, err := ts.DB.KeyUser(r.Context(), config.HashKey(api.Bearer(r)))
+	userID, role, ok, err := ts.DB.KeyUser(r.Context(), db.HashKey(api.Bearer(r)))
 	var t *tenant
-	if err == nil && ok {
+	if err == nil && ok && role.Can(rbac.UseAPI) {
 		t, err = ts.tenant(r.Context(), userID)
 	}
 	switch {
@@ -47,6 +47,8 @@ func (ts *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream error"})
 	case !ok:
 		api.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
+	case !role.Can(rbac.UseAPI):
+		api.WriteJSON(w, http.StatusForbidden, map[string]string{"error": "the key's owner is not approved on this server"})
 	default:
 		t.h.ServeHTTP(w, r)
 	}
@@ -78,70 +80,26 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 	if ts.tenants == nil {
 		ts.tenants, ts.locks = map[int64]*tenant{}, map[int64]*sync.Map{}
 	}
-	cfg, err := ts.DB.UserConfig(ctx, userID)
+	settings, err := ts.DB.UserSettings(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Listen, cfg.CacheTTL, cfg.CORSOrigins = ts.Global.Listen, ts.Global.CacheTTL, ts.Global.CORSOrigins
-	rs := routedStore{sa: ts.SAStore, viaSA: map[string]bool{}}
-	// Without the user's token, their service account spreadsheets still work.
-	if rs.user, err = ts.NewStore(userID); err != nil {
-		rs.user = errStore{err}
+	st, err := ts.NewStore(userID)
+	if err != nil {
+		st = errStore{err} // each call fails until the user signs in again
 	}
-	if rs.sa == nil {
-		rs.sa = errStore{errors.New("spreadsheet needs the service account, but the server has none configured")}
-	}
-	for _, ss := range cfg.Spreadsheets {
-		if ss.ServiceAccount {
-			rs.viaSA[ss.ID] = true
-		}
-	}
-	svc := service.New(cfg, rs)
+	svc := service.New(settings, st, ts.Global.CacheTTL)
 	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
 	if ts.locks[userID] == nil {
 		ts.locks[userID] = &sync.Map{}
 	}
 	svc.UseLocks(ts.locks[userID])
-	t := &tenant{api.New(cfg, svc).Mux(), svc}
+	t := &tenant{api.New(settings, svc).Mux(), svc}
 	ts.tenants[userID] = t
 	return t, nil
 }
 
-// routedStore sends each spreadsheet to the user's credentials or the service account. If a user
-// added one spreadsheet both ways, the service account serves both, since it was checked on add.
-type routedStore struct {
-	user, sa store.Store
-	viaSA    map[string]bool // Google spreadsheet ids
-}
-
-func (r routedStore) pick(id string) store.Store {
-	if r.viaSA[id] {
-		return r.sa
-	}
-	return r.user
-}
-
-func (r routedStore) Read(ctx context.Context, id, tab string) ([][]any, error) {
-	return r.pick(id).Read(ctx, id, tab)
-}
-
-func (r routedStore) Append(ctx context.Context, id, tab string, row []any) error {
-	return r.pick(id).Append(ctx, id, tab, row)
-}
-
-func (r routedStore) SetCells(ctx context.Context, id, tab string, row int, cells map[int]any) error {
-	return r.pick(id).SetCells(ctx, id, tab, row, cells)
-}
-
-func (r routedStore) DeleteRow(ctx context.Context, id, tab string, row int) error {
-	return r.pick(id).DeleteRow(ctx, id, tab, row)
-}
-
-func (r routedStore) Tabs(ctx context.Context, id string) ([]string, error) {
-	return r.pick(id).Tabs(ctx, id)
-}
-
-// errStore fails every call; it stands in for credentials the server can't use.
+// errStore fails every call; it stands in for a user's missing Google credentials.
 type errStore struct{ err error }
 
 func (e errStore) Read(context.Context, string, string) ([][]any, error)            { return nil, e.err }

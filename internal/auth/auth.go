@@ -106,16 +106,16 @@ func (g *Google) signIn(ctx context.Context, code, verifier string) (int64, erro
 }
 
 // CurrentUser returns the signed-in user, or ok=false.
-func (g *Google) CurrentUser(r *http.Request) (id int64, email string, ok bool) {
+func (g *Google) CurrentUser(r *http.Request) (u db.User, ok bool) {
 	c, err := r.Cookie("session")
 	if err != nil {
-		return 0, "", false
+		return db.User{}, false
 	}
-	id, email, ok, err = g.DB.SessionUser(r.Context(), c.Value)
+	u, ok, err = g.DB.SessionUser(r.Context(), c.Value)
 	if err != nil {
 		slog.Error("session", "err", err)
 	}
-	return id, email, ok
+	return u, ok
 }
 
 // Logout ends the session and returns to the home page.

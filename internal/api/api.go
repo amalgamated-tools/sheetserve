@@ -12,26 +12,22 @@ import (
 
 	"google.golang.org/api/googleapi"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 const Version = "0.1.0"
 
 type API struct {
-	cfg *config.Config
-	svc *service.Service
+	settings *db.Settings
+	svc      *service.Service
 }
 
 type handlerFunc func(r *http.Request, sheet, tab string) (int, any, error)
 
-func New(cfg *config.Config, svc *service.Service) *API { return &API{cfg: cfg, svc: svc} }
-
-func (a *API) Routes() http.Handler { return CORS(a.cfg, a.mux()) }
+func New(settings *db.Settings, svc *service.Service) *API { return &API{settings: settings, svc: svc} }
 
 func (a *API) Mux() http.Handler { return a.mux() }
-
-func CORS(cfg *config.Config, next http.Handler) http.Handler { return (&API{cfg: cfg}).cors(next) }
 
 func Bearer(r *http.Request) string { return bearer(r) }
 
@@ -50,15 +46,15 @@ func (a *API) mux() *http.ServeMux {
 	return mux
 }
 
-// cors lets browsers on the configured origins call the API. Keys travel in the Authorization
+// CORS lets browsers on origins call the API. Keys travel in the Authorization
 // header, not cookies, so credentials mode is never needed.
-func (a *API) cors(next http.Handler) http.Handler {
+func CORS(origins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(a.cfg.CORSOrigins) > 0 {
+		if len(origins) > 0 {
 			w.Header().Add("Vary", "Origin") // so caches don't reuse a response across origins
 		}
 		origin := r.Header.Get("Origin")
-		if origin == "" || !slices.ContainsFunc(a.cfg.CORSOrigins, func(o string) bool { return o == "*" || o == origin }) {
+		if origin == "" || !slices.ContainsFunc(origins, func(o string) bool { return o == "*" || o == origin }) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -80,15 +76,15 @@ func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sheet, tab := r.PathValue("sheet"), r.PathValue("tab")
-		key := a.cfg.KeyFor(bearer(r))
+		key := a.settings.KeyFor(bearer(r))
 		status, body, err := func() (int, any, error) {
 			if key == nil {
 				return 0, nil, &service.APIError{Status: http.StatusUnauthorized, Msg: "missing or invalid API key"}
 			}
-			if _, ok := a.cfg.Rule(sheet, tab); !ok {
+			if _, ok := a.settings.Rule(sheet, tab); !ok {
 				return 0, nil, &service.APIError{Status: http.StatusNotFound, Msg: "unknown tab"}
 			}
-			if !a.cfg.Can(key, sheet, tab, op) {
+			if !a.settings.Can(key, sheet, tab, op) {
 				return 0, nil, &service.APIError{Status: http.StatusForbidden, Msg: op + " not allowed on " + sheet + "/" + tab}
 			}
 			return h(r, sheet, tab)

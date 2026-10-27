@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -18,8 +19,8 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/auth"
-	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
@@ -34,23 +35,10 @@ var webTmpl = template.Must(template.New("").Funcs(template.FuncMap{
 
 var sheetName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-var sheetURL = regexp.MustCompile(`/spreadsheets/d/([A-Za-z0-9_-]+)`)
-
-// spreadsheetID takes a spreadsheet URL or a bare id and returns the id, or "".
-func spreadsheetID(s string) string {
-	s = strings.TrimSpace(s)
-	if m := sheetURL.FindStringSubmatch(s); m != nil {
-		return m[1]
-	}
-	if sheetName.MatchString(s) {
-		return s
-	}
-	return ""
-}
-
 type user struct {
 	id    int64
 	email string
+	role  rbac.Role
 }
 
 // The dashboard's pages. A form posts to /app/... and lands back on the page it's on.
@@ -58,16 +46,20 @@ const (
 	sheetsPage   = "/sheets"
 	newSheetPage = "/sheets/new"
 	keysPage     = "/keys"
+	usersPage    = "/users"
+	pendingPage  = "/pending" // shown instead of any page to a user who is not approved yet
 )
 
 type page struct {
-	Path                                   string // sheetsPage, newSheetPage or keysPage
+	Path                                   string // one of the ...Page constants
 	Email, Error, NewKey, PickerKey, AppID string
-	SAEmail                                string       // set when the server has a service account
 	NewSheet                               newSheetForm // refilled after a failed create
 	Sheets                                 []sheetView
 	Keys                                   []keyView
 	TabSpecs, AllOps                       []string
+	Admin                                  bool       // the viewer may manage users
+	Users                                  []userView // on usersPage
+	Roles                                  []rbac.Role
 }
 
 // Title names the page in the browser tab.
@@ -77,23 +69,26 @@ func (p page) Title() string {
 		return "API keys"
 	case newSheetPage:
 		return "New spreadsheet"
+	case usersPage:
+		return "Users"
+	case pendingPage:
+		return "Waiting for approval"
 	}
 	return "Spreadsheets"
 }
 
 // Section is the nav entry the page belongs under.
 func (p page) Section() string {
-	if p.Path == keysPage {
-		return keysPage
+	if p.Path == keysPage || p.Path == usersPage {
+		return p.Path
 	}
 	return sheetsPage
 }
 
 type sheetView struct {
-	Name, Title    string
-	GoogleID       string // for the link to open it in Google Sheets
-	ServiceAccount bool
-	Tabs           []tabView
+	Name, Title string
+	GoogleID    string // for the link to open it in Google Sheets
+	Tabs        []tabView
 }
 
 type tabView struct {
@@ -105,6 +100,13 @@ type tabView struct {
 
 type keyView struct{ Name, Tabs, Ops string }
 
+type userView struct {
+	ID    int64
+	Email string
+	Role  rbac.Role
+	You   bool
+}
+
 type newSheetForm struct{ Name, Title, Schema string }
 
 // Dashboard serves the pages where signed-in users manage their spreadsheets, tabs and keys.
@@ -114,14 +116,13 @@ type Dashboard struct {
 	Tenants   *tenancy.Tenants
 	PickerKey string // browser API key for Google Picker
 	AppID     string // Cloud project number, so picked files are granted to this app
-	SAEmail   string // the address users share spreadsheets with for Tenants.SAStore
 }
 
 // Handler serves the dashboard. It refuses cross-origin form posts.
 func (d *Dashboard) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		if _, _, ok := d.Auth.CurrentUser(r); ok {
+		if _, ok := d.Auth.CurrentUser(r); ok {
 			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
 			return
 		}
@@ -130,30 +131,66 @@ func (d *Dashboard) Handler() http.Handler {
 		}
 	})
 	for _, path := range []string{sheetsPage, newSheetPage, keysPage} {
-		mux.HandleFunc("GET "+path, d.signedIn(func(w http.ResponseWriter, r *http.Request, u user) {
+		mux.HandleFunc("GET "+path, d.signedIn(rbac.EditOwn, func(w http.ResponseWriter, r *http.Request, u user) {
 			d.render(w, r, u, page{Path: path}, http.StatusOK)
 		}))
 	}
+	mux.HandleFunc("GET "+usersPage, d.signedIn(rbac.ManageUsers, func(w http.ResponseWriter, r *http.Request, u user) {
+		d.render(w, r, u, page{Path: usersPage}, http.StatusOK)
+	}))
 	mux.HandleFunc("POST /logout", d.Auth.Logout)
-	mux.HandleFunc("GET /app/token", d.signedIn(d.token))
-	mux.HandleFunc("POST /app/sheets", d.signedIn(d.addSheet))
-	mux.HandleFunc("POST /app/sheets/new", d.signedIn(d.createSheet))
-	mux.HandleFunc("POST /app/sheets/delete", d.signedIn(d.deleteSheet))
-	mux.HandleFunc("POST /app/tabs", d.signedIn(d.saveTab))
-	mux.HandleFunc("POST /app/keys", d.signedIn(d.createKey))
-	mux.HandleFunc("POST /app/keys/delete", d.signedIn(d.deleteKey))
+	mux.HandleFunc("GET /app/token", d.signedIn(rbac.EditOwn, d.token))
+	mux.HandleFunc("POST /app/sheets", d.signedIn(rbac.EditOwn, d.addSheet))
+	mux.HandleFunc("POST /app/sheets/new", d.signedIn(rbac.EditOwn, d.createSheet))
+	mux.HandleFunc("POST /app/sheets/delete", d.signedIn(rbac.EditOwn, d.deleteSheet))
+	mux.HandleFunc("POST /app/tabs", d.signedIn(rbac.EditOwn, d.saveTab))
+	mux.HandleFunc("POST /app/keys", d.signedIn(rbac.EditOwn, d.createKey))
+	mux.HandleFunc("POST /app/keys/delete", d.signedIn(rbac.EditOwn, d.deleteKey))
+	mux.HandleFunc("POST /app/users/role", d.signedIn(rbac.ManageUsers, d.setRole))
+	mux.HandleFunc("POST /app/users/delete", d.signedIn(rbac.ManageUsers, d.deleteUser))
 	return http.NewCrossOriginProtection().Handler(mux)
 }
 
-func (d *Dashboard) signedIn(h func(http.ResponseWriter, *http.Request, user)) http.HandlerFunc {
+// signedIn runs h for a signed-in user whose role grants perm. A user still waiting for approval
+// sees the pending page instead.
+func (d *Dashboard) signedIn(perm rbac.Permission, h func(http.ResponseWriter, *http.Request, user)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, email, ok := d.Auth.CurrentUser(r)
+		cur, ok := d.Auth.CurrentUser(r)
 		if !ok {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
-		h(w, r, user{id, email})
+		u := user{cur.ID, cur.Email, cur.Role}
+		switch {
+		case u.role.Can(perm):
+			h(w, r, u)
+		case !u.role.Can(rbac.EditOwn):
+			d.render(w, r, u, page{Path: pendingPage}, http.StatusForbidden)
+		default:
+			http.Error(w, "your role does not allow that", http.StatusForbidden)
+		}
 	}
+}
+
+// setRole changes another user's role, such as approving a pending one.
+func (d *Dashboard) setRole(w http.ResponseWriter, r *http.Request, u user) {
+	id, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err == nil {
+		err = d.DB.SetRole(r.Context(), id, rbac.Role(r.FormValue("role")))
+	}
+	d.change(w, r, u, usersPage, err)
+}
+
+// deleteUser removes a user and everything they added. Their keys stop working at once.
+func (d *Dashboard) deleteUser(w http.ResponseWriter, r *http.Request, u user) {
+	id, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err == nil {
+		err = d.DB.DeleteUser(r.Context(), id)
+	}
+	if err == nil {
+		d.Tenants.Invalidate(id)
+	}
+	d.change(w, r, u, usersPage, err)
 }
 
 // token gives the dashboard a short-lived access token for Google Picker.
@@ -170,46 +207,28 @@ func (d *Dashboard) token(w http.ResponseWriter, r *http.Request, u user) {
 	api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "could not get a Google token; sign in again"})
 }
 
-// addSheet adds a spreadsheet picked from the user's Drive, or, with via=service_account, one
-// given by URL that the server reaches with its service account.
+// addSheet adds a spreadsheet picked from the user's Drive.
 func (d *Dashboard) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 	name, gid, title := r.FormValue("name"), r.FormValue("google_id"), r.FormValue("title")
-	viaSA := r.FormValue("via") == "service_account"
-	if viaSA {
-		if d.Tenants.SAStore == nil {
-			d.render(w, r, u, page{Path: sheetsPage, Error: "this server has no service account"}, http.StatusBadRequest)
-			return
-		}
-		gid, title = spreadsheetID(r.FormValue("url")), name
-	}
 	if !sheetName.MatchString(name) {
 		d.render(w, r, u, page{Path: sheetsPage, Error: "name must be letters, digits, - or _"}, http.StatusBadRequest)
 		return
 	}
 	if gid == "" {
-		d.render(w, r, u, page{Path: sheetsPage, Error: "paste a Google Sheets URL"}, http.StatusBadRequest)
+		d.render(w, r, u, page{Path: sheetsPage, Error: "choose a spreadsheet from Google Drive"}, http.StatusBadRequest)
 		return
 	}
 	var tabs []string
-	var err error
-	if viaSA {
-		tabs, err = d.Tenants.SAStore.Tabs(r.Context(), gid)
-	} else {
-		var svc *service.Service
-		if svc, err = d.Tenants.Service(r.Context(), u.id); err == nil {
-			tabs, err = svc.Tabs(r.Context(), gid)
-		}
+	svc, err := d.Tenants.Service(r.Context(), u.id)
+	if err == nil {
+		tabs, err = svc.Tabs(r.Context(), gid)
 	}
 	if err != nil {
-		slog.Error("read tabs", "user", u.id, "service_account", viaSA, "err", err)
-		msg := "could not read that spreadsheet from Google" + googleDetail(err)
-		if viaSA {
-			msg += "; share it with " + d.SAEmail + " first"
-		}
-		d.render(w, r, u, page{Path: sheetsPage, Error: msg}, http.StatusBadGateway)
+		slog.Error("read tabs", "user", u.id, "err", err)
+		d.render(w, r, u, page{Path: sheetsPage, Error: "could not read that spreadsheet from Google" + googleDetail(err)}, http.StatusBadGateway)
 		return
 	}
-	d.saveSheet(w, r, u, db.Spreadsheet{Name: name, Title: title, GoogleID: gid, ServiceAccount: viaSA, Tabs: tabs})
+	d.saveSheet(w, r, u, db.Spreadsheet{Name: name, Title: title, GoogleID: gid, Tabs: tabs})
 }
 
 // googleDetail returns Google's status and message for err, ready to append to a dashboard error.
@@ -342,7 +361,7 @@ func (d *Dashboard) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 			return
 		}
 	}
-	rule := config.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
+	rule := db.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
 	d.change(w, r, u, sheetsPage+"#sheet-"+sheet, d.DB.SaveTab(r.Context(), u.id, sheet, tab, rule))
 }
 
@@ -372,9 +391,9 @@ func (d *Dashboard) createKey(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, page{Path: keysPage, Error: "pick at least one tab for the key"}, http.StatusBadRequest)
 		return
 	}
-	key := config.NewKey()
-	err := d.DB.CreateKey(r.Context(), u.id, config.Key{
-		Hash: config.HashKey(key), Name: strings.TrimSpace(r.FormValue("name")), Tabs: r.Form["tabs"], Ops: r.Form["ops"],
+	key := db.NewKey()
+	err := d.DB.CreateKey(r.Context(), u.id, db.Key{
+		Hash: db.HashKey(key), Name: strings.TrimSpace(r.FormValue("name")), Tabs: r.Form["tabs"], Ops: r.Form["ops"],
 	})
 	if err != nil {
 		d.render(w, r, u, page{Path: keysPage, Error: userMessage(err)}, http.StatusBadRequest)
@@ -402,9 +421,12 @@ func (d *Dashboard) change(w http.ResponseWriter, r *http.Request, u user, to st
 
 func userMessage(err error) string {
 	var ae *service.APIError
+	var ve db.ValidationError
 	switch {
 	case errors.As(err, &ae):
 		return ae.Msg
+	case errors.As(err, &ve):
+		return ve.Error()
 	case strings.Contains(err.Error(), "UNIQUE constraint failed"):
 		return "that name is already in use"
 	}
@@ -418,7 +440,19 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, p pag
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
 	}
-	p.Email, p.PickerKey, p.AppID, p.SAEmail, p.AllOps = u.email, d.PickerKey, d.AppID, d.SAEmail, config.AllOps
+	p.Email, p.PickerKey, p.AppID, p.AllOps = u.email, d.PickerKey, d.AppID, db.AllOps
+	p.Admin, p.Roles = u.role.Can(rbac.ManageUsers), rbac.Roles
+	if p.Path == usersPage {
+		users, err := d.DB.Users(r.Context())
+		if err != nil {
+			slog.Error("dashboard", "user", u.id, "err", err)
+			http.Error(w, "could not load the users", http.StatusInternalServerError)
+			return
+		}
+		for _, v := range users {
+			p.Users = append(p.Users, userView{v.ID, v.Email, v.Role, v.ID == u.id})
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := webTmpl.ExecuteTemplate(w, strings.TrimPrefix(p.Path, "/"), p); err != nil {
@@ -428,18 +462,18 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, p pag
 
 // load fills p with userID's spreadsheets, tabs and keys, in display order.
 func (d *Dashboard) load(ctx context.Context, userID int64, p *page) error {
-	sheets, cfg, err := d.DB.Spreadsheets(ctx, userID)
+	sheets, settings, err := d.DB.Spreadsheets(ctx, userID)
 	if err != nil {
 		return err
 	}
 	p.TabSpecs = []string{"*"}
 	for _, s := range sheets {
-		p.Sheets = append(p.Sheets, sheetView{Name: s.Name, Title: s.Title, GoogleID: s.GoogleID, ServiceAccount: s.ServiceAccount})
+		p.Sheets = append(p.Sheets, sheetView{Name: s.Name, Title: s.Title, GoogleID: s.GoogleID})
 		p.TabSpecs = append(p.TabSpecs, s.Name+"/*")
 	}
 	for i, s := range sheets {
 		for _, tab := range s.Tabs {
-			rule := cfg.Spreadsheets[s.Name].Tabs[tab]
+			rule := settings.Spreadsheets[s.Name].Tabs[tab]
 			key := rule.KeyColumn()
 			if key == "id" {
 				key = ""
@@ -448,7 +482,7 @@ func (d *Dashboard) load(ctx context.Context, userID int64, p *page) error {
 			p.TabSpecs = append(p.TabSpecs, s.Name+"/"+tab)
 		}
 	}
-	for _, k := range cfg.Keys {
+	for _, k := range settings.Keys {
 		ops := "all the tab allows"
 		if len(k.Ops) > 0 {
 			ops = strings.Join(k.Ops, ", ")

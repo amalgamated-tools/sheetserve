@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/api/googleapi"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
@@ -56,15 +56,14 @@ func (f *fakeStore) Tabs(_ context.Context, id string) ([]string, error) {
 
 func newTestAPI(t *testing.T) http.Handler {
 	t.Helper()
-	cfg := &config.Config{
-		CacheTTL: time.Minute, // exercises cache invalidation on writes
-		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
 			"Products": {Ops: []string{"read"}, Hidden: []string{"cost"}},
-			"Orders":   {Ops: config.AllOps},
+			"Orders":   {Ops: db.AllOps},
 		}}},
-		Keys: []config.Key{
-			{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}},
-			{Name: "web", Hash: config.HashKey("web-key"), Tabs: []string{"shop/*"}, Ops: []string{"read"}},
+		Keys: []db.Key{
+			{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}},
+			{Name: "web", Hash: db.HashKey("web-key"), Tabs: []string{"shop/*"}, Ops: []string{"read"}},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -74,7 +73,7 @@ func newTestAPI(t *testing.T) http.Handler {
 		"SS/Products": {{"id", "name", "cost"}, {"p1", "mug", 3.5}},
 		"SS/Orders":   {{"id", "item", "qty"}},
 	}}
-	return New(cfg, service.New(cfg, store)).Routes()
+	return New(cfg, service.New(cfg, store, time.Minute)).Mux() // the cache TTL exercises invalidation on writes
 }
 
 func call(t *testing.T, h http.Handler, method, path, key, body string) (int, string) {
@@ -232,12 +231,12 @@ func TestOpenAPI(t *testing.T) {
 // Tabs whose names sanitize alike, a hidden id, and columns that clash with pagination
 // or repeat must still produce unique operations and parameters.
 func TestOpenAPIEdgeCases(t *testing.T) {
-	cfg := &config.Config{
-		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
 			"A B": {Ops: []string{"read"}},
 			"A_B": {Ops: []string{"read"}, Hidden: []string{"id"}},
 		}}},
-		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -246,7 +245,7 @@ func TestOpenAPIEdgeCases(t *testing.T) {
 		"SS/A B": {{"id", "limit", "name", "name", "name[eq]"}},
 		"SS/A_B": {{"id", "name"}},
 	}}
-	_, body := call(t, New(cfg, service.New(cfg, store)).Routes(), "GET", "/openapi.json", "admin-key", "")
+	_, body := call(t, New(cfg, service.New(cfg, store, 0)).Mux(), "GET", "/openapi.json", "admin-key", "")
 	var spec struct {
 		Paths map[string]map[string]struct {
 			OperationID string `json:"operationId"`
@@ -307,18 +306,18 @@ func (f tabFailStore) Read(ctx context.Context, id, tab string) ([][]any, error)
 
 // A tab that fails to load keeps its name reserved, so the next tab can't take over its tools.
 func TestFailedTabKeepsName(t *testing.T) {
-	cfg := &config.Config{
-		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
 			"A B": {Ops: []string{"read"}},
 			"A_B": {Ops: []string{"read"}},
 		}}},
-		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	store := tabFailStore{&fakeStore{tabs: map[string][][]any{"SS/A_B": {{"id", "name"}}}}, "A B"}
-	a := New(cfg, service.New(cfg, store))
+	a := New(cfg, service.New(cfg, store, 0))
 	var names []string
 	a.eachTab(context.Background(), &cfg.Keys[0], func(name, _, _, _ string, _, _ []string) { names = append(names, name) })
 	if !slices.Equal(names, []string{"shop_A_B_2"}) {
@@ -327,11 +326,11 @@ func TestFailedTabKeepsName(t *testing.T) {
 }
 
 func TestListSortAndFilterOps(t *testing.T) {
-	cfg := &config.Config{
-		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
 			"Orders": {Ops: []string{"read"}, Hidden: []string{"cost"}},
 		}}},
-		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -342,7 +341,7 @@ func TestListSortAndFilterOps(t *testing.T) {
 		{"o2", "mug", "9", "2", "y", "1"},
 		{"o3", "tea pot", "2", "3", "z", "2"},
 	}}}
-	h := New(cfg, service.New(cfg, store)).Routes()
+	h := New(cfg, service.New(cfg, store, 0)).Mux()
 	ids := func(body string) string {
 		var rows []map[string]any
 		if err := json.Unmarshal([]byte(body), &rows); err != nil {
@@ -386,11 +385,7 @@ func TestListSortAndFilterOps(t *testing.T) {
 }
 
 func TestCORS(t *testing.T) {
-	cfg := &config.Config{CORSOrigins: []string{"https://app.example"}}
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	h := New(cfg, service.New(cfg, &fakeStore{})).Routes()
+	h := CORS([]string{"https://app.example"}, New(&db.Settings{}, service.New(&db.Settings{}, &fakeStore{}, 0)).Mux())
 	req := func(method, origin string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/v1/shop/Orders", nil)
 		r.Header.Set("Origin", origin)
@@ -423,16 +418,16 @@ func (f *failStore) Read(context.Context, string, string) ([][]any, error) { ret
 
 // Google's rate limit reaches callers as 429 with Retry-After; other Google errors stay 502.
 func TestGoogleRateLimit(t *testing.T) {
-	cfg := &config.Config{
-		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{"Orders": {Ops: []string{"read"}}}}},
-		Keys:         []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{"Orders": {Ops: []string{"read"}}}}},
+		Keys:         []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	for code, want := range map[int]int{429: 429, 404: 502} {
 		store := &failStore{err: fmt.Errorf("read: %w", &googleapi.Error{Code: code, Message: "nope"})}
-		h := New(cfg, service.New(cfg, store)).Routes()
+		h := New(cfg, service.New(cfg, store, 0)).Mux()
 		req := httptest.NewRequest("GET", "/v1/shop/Orders", nil)
 		req.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
@@ -446,13 +441,13 @@ func TestGoogleRateLimit(t *testing.T) {
 // A tab can name its key column. Without one it can only be listed, and its tools and spec say so;
 // a chosen key is required on create, unique, and fixed; a key that matches two rows is refused.
 func TestKeyColumns(t *testing.T) {
-	cfg := &config.Config{
-		Spreadsheets: map[string]config.Spreadsheet{"shop": {ID: "SS", Tabs: map[string]config.TabRule{
-			"Log":    {Ops: config.AllOps},
-			"People": {Ops: config.AllOps, Key: "email"},
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+			"Log":    {Ops: db.AllOps},
+			"People": {Ops: db.AllOps, Key: "email"},
 			"Dupes":  {Ops: []string{"read"}},
 		}}},
-		Keys: []config.Key{{Name: "admin", Hash: config.HashKey("admin-key"), Tabs: []string{"*"}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -462,7 +457,7 @@ func TestKeyColumns(t *testing.T) {
 		"SS/People": {{"email", "name"}},
 		"SS/Dupes":  {{"id", "v"}, {"x", 1}, {"x", 2}},
 	}}
-	h := New(cfg, service.New(cfg, store)).Routes()
+	h := New(cfg, service.New(cfg, store, 0)).Mux()
 
 	for _, s := range []struct {
 		name, method, path, body string

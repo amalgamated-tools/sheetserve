@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/auth"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
 )
@@ -91,15 +93,13 @@ func newTestDashboard(t *testing.T, sheetStore store.Store) (*Dashboard, *httpte
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	global := &config.Config{}
-	if err := global.Validate(); err != nil {
-		t.Fatal(err)
-	}
 	tenants := &tenancy.Tenants{DB: d, Global: global,
 		NewStore: func(int64) (store.Store, error) { return sheetStore, nil }}
 	dash := &Dashboard{DB: d, Auth: auth.New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"}), Tenants: tenants}
 	// The API routes too, so tests can use the keys they create.
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", tenants)
+	mux.Handle("GET /openapi.json", tenants)
 	mux.Handle("/", dash.Handler())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -112,7 +112,13 @@ func browser(t *testing.T) *http.Client {
 	return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
+// signInAs signs sub in, approving them as a member unless they are the first user, the admin.
 func signInAs(t *testing.T, dash *Dashboard, srv *httptest.Server, sub string) *http.Client {
+	t.Helper()
+	return signIn(t, dash, srv, sub, true)
+}
+
+func signIn(t *testing.T, dash *Dashboard, srv *httptest.Server, sub string, approve bool) *http.Client {
 	t.Helper()
 	ctx := context.Background()
 	id, err := dash.DB.UpsertUser(ctx, sub, sub+"@example.com", "rt-"+sub)
@@ -122,6 +128,13 @@ func signInAs(t *testing.T, dash *Dashboard, srv *httptest.Server, sub string) *
 	sess, err := dash.DB.NewSession(ctx, id)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if u, _, err := dash.DB.SessionUser(ctx, sess); err != nil {
+		t.Fatal(err)
+	} else if approve && u.Role == rbac.Pending {
+		if err := dash.DB.SetRole(ctx, id, rbac.Member); err != nil {
+			t.Fatal(err)
+		}
 	}
 	c := browser(t)
 	u, _ := url.Parse(srv.URL)
@@ -298,90 +311,6 @@ func TestDashboardPages(t *testing.T) {
 	}
 }
 
-// A spreadsheet added by URL is read with the service account, while picked ones keep using the
-// user's token, and the dashboard only offers the URL form when a service account is configured.
-func TestServiceAccountSheets(t *testing.T) {
-	userStore := &fakeStore{tabs: map[string][][]any{"MINE/Orders": {{"id", "item"}, {"o1", "mug"}}}}
-	saStore := &fakeStore{tabs: map[string][][]any{"SHARED/Log": {{"id", "msg"}, {"l1", "hello"}}}}
-	dash, srv := newTestDashboard(t, userStore)
-	alice := signInAs(t, dash, srv, "alice")
-
-	if _, body := get(t, alice, srv.URL+"/sheets", ""); strings.Contains(body, "Add by URL") {
-		t.Error("URL form shown without a service account")
-	}
-	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"SHARED"}, "name": {"log"}}); s != 400 || !strings.Contains(body, "no service account") {
-		t.Errorf("add by URL without a service account: %d %s", s, body)
-	}
-
-	dash.Tenants.SAStore, dash.SAEmail = saStore, "sa@proj.iam.gserviceaccount.com"
-	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "sa@proj.iam.gserviceaccount.com") {
-		t.Error("URL form does not name the service account")
-	}
-	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"via": {"service_account"}, "url": {"not a url!"}, "name": {"log"}}); s != 400 {
-		t.Errorf("bad URL: %d %s", s, body)
-	}
-	for _, f := range []url.Values{
-		{"via": {"service_account"}, "url": {"https://docs.google.com/spreadsheets/d/SHARED/edit#gid=0"}, "name": {"log"}},
-		{"name": {"shop"}, "google_id": {"MINE"}, "title": {"Shop"}},
-	} {
-		if s, body := post(t, alice, srv.URL+"/app/sheets", f); s != 303 {
-			t.Fatalf("add sheet %v: %d %s", f, s, body)
-		}
-	}
-	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "via service account") {
-		t.Error("dashboard does not mark the service account sheet")
-	}
-	for _, tab := range [][2]string{{"log", "Log"}, {"shop", "Orders"}} {
-		if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {tab[0]}, "tab": {tab[1]}, "ops": {"read"}}); s != 303 {
-			t.Fatalf("save tab %v: %d %s", tab, s, body)
-		}
-	}
-	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"k"}, "tabs": {"*"}})
-	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
-
-	c := browser(t)
-	if s, body := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 || !strings.Contains(body, `"hello"`) {
-		t.Errorf("service account sheet: %d %s", s, body)
-	}
-	if s, body := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 || !strings.Contains(body, `"mug"`) {
-		t.Errorf("user sheet: %d %s", s, body)
-	}
-
-	// Without the user's Google token, the service account sheet keeps working.
-	dash.Tenants.NewStore = func(int64) (store.Store, error) { return nil, errors.New("no refresh token") }
-	dash.Tenants.Invalidate(1)
-	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 200 {
-		t.Errorf("service account sheet without user token: %d", s)
-	}
-	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 502 {
-		t.Errorf("user sheet without user token: %d", s)
-	}
-
-	// If the server loses its service account, only those sheets fail.
-	dash.Tenants.NewStore = func(int64) (store.Store, error) { return userStore, nil }
-	dash.Tenants.SAStore = nil
-	dash.Tenants.Invalidate(1)
-	if s, _ := get(t, c, srv.URL+"/v1/log/Log", key); s != 502 {
-		t.Errorf("service account sheet with no service account: %d", s)
-	}
-	if s, _ := get(t, c, srv.URL+"/v1/shop/Orders", key); s != 200 {
-		t.Errorf("user sheet with no service account: %d", s)
-	}
-}
-
-func TestSpreadsheetID(t *testing.T) {
-	for in, want := range map[string]string{
-		"https://docs.google.com/spreadsheets/d/1AbC-d_E/edit#gid=0": "1AbC-d_E",
-		" 1AbC-d_E ":           "1AbC-d_E",
-		"https://example.com/": "",
-		"":                     "",
-	} {
-		if got := spreadsheetID(in); got != want {
-			t.Errorf("spreadsheetID(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 // When Google rejects a picked spreadsheet, the dashboard shows Google's status and message.
 func TestAddSheetShowsGoogleError(t *testing.T) {
 	dash, srv := newTestDashboard(t, failingStore{&googleapi.Error{Code: 404, Message: "Requested entity was not found."}})
@@ -488,5 +417,75 @@ func TestSaveTabKey(t *testing.T) {
 	}
 	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 403 || !strings.Contains(body, "can only be listed") {
 		t.Errorf("get without id column: %d %s", s, body)
+	}
+}
+
+// The first user is admin. Later ones wait as pending, can't change anything, and their keys get
+// 403 until approved. Only an admin manages users, and the last admin can't step down.
+func TestRoles(t *testing.T) {
+	dash, srv := newTestDashboard(t, &fakeStore{})
+	alice := signIn(t, dash, srv, "alice", false)
+	carol := signIn(t, dash, srv, "carol", false)
+	bob := signInAs(t, dash, srv, "bob")
+	users, err := dash.DB.Users(context.Background())
+	if err != nil || len(users) != 3 || users[0].Role != rbac.Admin || users[1].Role != rbac.Pending || users[2].Role != rbac.Member {
+		t.Fatalf("users: %+v %v", users, err)
+	}
+	carolID := strconv.FormatInt(users[1].ID, 10)
+
+	if s, body := get(t, alice, srv.URL+"/users", ""); s != 200 || !strings.Contains(body, "carol@example.com") {
+		t.Errorf("admin users page: %d", s)
+	}
+	if _, body := get(t, bob, srv.URL+"/sheets", ""); strings.Contains(body, `href="/users"`) {
+		t.Error("member sees the users link")
+	}
+	if s, _ := get(t, bob, srv.URL+"/users", ""); s != 403 {
+		t.Errorf("member users page: %d", s)
+	}
+	if s, _ := post(t, bob, srv.URL+"/app/users/role", url.Values{"id": {carolID}, "role": {"admin"}}); s != 403 {
+		t.Errorf("member set role: %d", s)
+	}
+	for _, path := range []string{"/sheets", "/keys", "/users"} {
+		if s, body := get(t, carol, srv.URL+path, ""); s != 403 || !strings.Contains(body, "Waiting for approval") {
+			t.Errorf("pending %s: %d", path, s)
+		}
+	}
+	if s, _ := post(t, carol, srv.URL+"/app/keys", url.Values{"name": {"k"}, "tabs": {"*"}}); s != 403 {
+		t.Errorf("pending made a key: %d", s)
+	}
+
+	setRole := func(id, role string) (int, string) {
+		return post(t, alice, srv.URL+"/app/users/role", url.Values{"id": {id}, "role": {role}})
+	}
+	if s, _ := setRole(carolID, "member"); s != 303 {
+		t.Fatalf("approve: %d", s)
+	}
+	_, body := post(t, carol, srv.URL+"/app/keys", url.Values{"name": {"k"}, "tabs": {"*"}})
+	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
+	c := browser(t)
+	if s, _ := get(t, c, srv.URL+"/openapi.json", key); s != 200 {
+		t.Errorf("approved user's key: %d", s)
+	}
+	if s, _ := setRole(carolID, "pending"); s != 303 {
+		t.Fatalf("unapprove: %d", s)
+	}
+	if s, _ := get(t, c, srv.URL+"/openapi.json", key); s != 403 {
+		t.Errorf("pending user's key: %d", s)
+	}
+
+	if s, body := setRole(carolID, "owner"); s != 400 || !strings.Contains(body, "unknown role") {
+		t.Errorf("unknown role: %d", s)
+	}
+	if s, body := setRole(strconv.FormatInt(users[0].ID, 10), "member"); s != 400 || !strings.Contains(body, "at least one admin") {
+		t.Errorf("last admin stepped down: %d", s)
+	}
+	if s, _ := post(t, alice, srv.URL+"/app/users/delete", url.Values{"id": {carolID}}); s != 303 {
+		t.Errorf("remove: %d", s)
+	}
+	if s, _ := get(t, c, srv.URL+"/openapi.json", key); s != 401 {
+		t.Errorf("removed user's key: %d", s)
+	}
+	if s, _ := get(t, carol, srv.URL+"/sheets", ""); s != 303 {
+		t.Errorf("removed user's session: %d", s)
 	}
 }

@@ -34,9 +34,6 @@ func TestRoutes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	global := &config.Config{}
-	if err := global.Validate(); err != nil {
-		t.Fatal(err)
-	}
 	h := routes(global, newApp(global, d, &oauth2.Config{ClientID: "cid",
 		Endpoint: oauth2.Endpoint{AuthURL: "https://accounts.example/auth"}}))
 	for _, tc := range []struct {
