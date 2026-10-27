@@ -43,4 +43,7 @@ const (
 	ServerSetupRoutesDuration string = "server.setup_routes.duration"
 	ServerSetupRoutesSuccess  string = "server.setup_routes.success"
 	ServerSetupRoutes         string = "server.setup_routes"
+	ServerRun                 string = "server.run"
+	ServerRunDuration         string = "server.run.duration"
+	ServerRunSuccess          string = "server.run.success"
 )

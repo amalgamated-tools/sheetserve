@@ -13,6 +13,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otel"
 	"github.com/amalgamated-tools/sheetserve/internal/server"
+	"golang.org/x/sync/errgroup"
 )
 
 // ShutdownTimeout bounds telemetry flush on exit.
@@ -55,9 +56,26 @@ func realMain(ctx context.Context) error {
 	}
 	defer func() { _ = d.Close() }()
 
-	s, err := server.New(ctx, cfg, d)
+	s, err := server.New(
+		ctx,
+		server.WithConfig(cfg),
+		server.WithDB(d),
+	)
 	if err != nil {
 		return err
 	}
-	return s.Run(ctx)
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		slog.InfoContext(gctx, "Starting HTTP server")
+		return s.Run(gctx)
+	})
+
+	err = g.Wait()
+	if err != nil {
+		slog.ErrorContext(ctx, "error occurred", slog.Any("error", err))
+		return err
+	}
+
+	return nil
 }

@@ -521,3 +521,27 @@ func TestKeyColumns(t *testing.T) {
 		t.Error("keyless tab has an item path")
 	}
 }
+
+// Tab names reach handlers decoded, whether or not the request path needed escaping.
+func TestEscapedTabNames(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+			"Q1/Q2": {Ops: []string{"read"}}, "100%": {Ops: []string{"read"}}, "A B": {Ops: []string{"read"}},
+		}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{
+		"SS/Q1/Q2": {{"id"}, {"r1"}}, "SS/100%": {{"id"}, {"r2"}}, "SS/A B": {{"id"}, {"r3"}},
+	}}
+	h := New(cfg, service.New(cfg, store, 0)).Mux()
+	for path, want := range map[string]string{
+		"/v1/shop/Q1%2FQ2": "r1", "/v1/shop/100%25": "r2", "/v1/shop/A%20B": "r3", "/v1/shop/A%20B/r3": "r3",
+	} {
+		if status, body := call(t, h, "GET", path, "admin-key", ""); status != http.StatusOK || !strings.Contains(body, want) {
+			t.Errorf("GET %s: %d %s", path, status, body)
+		}
+	}
+}

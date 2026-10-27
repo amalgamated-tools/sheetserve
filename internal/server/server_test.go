@@ -17,17 +17,21 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	s, err := New(t.Context(), &config.Config{GoogleClientID: "cid"}, d)
+	s, err := New(
+		t.Context(),
+		WithConfig(&config.Config{GoogleClientID: "cid"}),
+		WithDB(d),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := s.handler
+	h := s.router
 	for _, tc := range []struct {
 		method, path string
 		status       int
 		want         string // in the Location header or body
 	}{
-		{"GET", "/healthz", 200, "ok"},
+		{"GET", "/healthz", 200, "."},
 		{"GET", "/login", 302, "https://accounts.google.com/o/oauth2/auth?"},
 		{"GET", "/auth/callback", 400, "invalid sign-in state"},
 		{"GET", "/v1/shop/Orders", 401, "missing or invalid API key"},

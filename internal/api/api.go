@@ -5,11 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"google.golang.org/api/googleapi"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -33,17 +35,28 @@ func Bearer(r *http.Request) string { return bearer(r) }
 
 func WriteJSON(w http.ResponseWriter, status int, body any) { writeJSON(w, status, body) }
 
-func (a *API) mux() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	mux.Handle("GET /v1/{sheet}/{tab}", a.endpoint("read", a.list))
-	mux.Handle("GET /v1/{sheet}/{tab}/{id}", a.endpoint("read", a.get))
-	mux.Handle("POST /v1/{sheet}/{tab}", a.endpoint("create", a.create))
-	mux.Handle("PATCH /v1/{sheet}/{tab}/{id}", a.endpoint("update", a.update))
-	mux.Handle("DELETE /v1/{sheet}/{tab}/{id}", a.endpoint("delete", a.delete))
-	mux.HandleFunc("GET /openapi.json", a.openAPIHandler)
-	mux.Handle("/mcp", a.mcpHandler())
-	return mux
+func (a *API) mux() chi.Router {
+	r := chi.NewRouter()
+	r.Method("GET", "/v1/{sheet}/{tab}", a.endpoint("read", a.list))
+	r.Method("GET", "/v1/{sheet}/{tab}/{id}", a.endpoint("read", a.get))
+	r.Method("POST", "/v1/{sheet}/{tab}", a.endpoint("create", a.create))
+	r.Method("PATCH", "/v1/{sheet}/{tab}/{id}", a.endpoint("update", a.update))
+	r.Method("DELETE", "/v1/{sheet}/{tab}/{id}", a.endpoint("delete", a.delete))
+	r.Get("/openapi.json", a.openAPIHandler)
+	r.Handle("/mcp", a.mcpHandler())
+	return r
+}
+
+// pathValue returns the decoded path parameter name. chi matches on the escaped path when the
+// request has one, such as a tab name with a slash in it, so its values can still be escaped.
+func pathValue(r *http.Request, name string) string {
+	v := chi.URLParam(r, name)
+	if r.URL.RawPath != "" {
+		if u, err := url.PathUnescape(v); err == nil {
+			return u
+		}
+	}
+	return v
 }
 
 // CORS lets browsers on origins call the API. Keys travel in the Authorization
@@ -75,7 +88,7 @@ func CORS(origins []string, next http.Handler) http.Handler {
 func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sheet, tab := r.PathValue("sheet"), r.PathValue("tab")
+		sheet, tab := pathValue(r, "sheet"), pathValue(r, "tab")
 		key := a.settings.KeyFor(bearer(r))
 		status, body, err := func() (int, any, error) {
 			if key == nil {
@@ -144,7 +157,7 @@ func (a *API) list(r *http.Request, sheet, tab string) (int, any, error) {
 }
 
 func (a *API) get(r *http.Request, sheet, tab string) (int, any, error) {
-	row, err := a.svc.Get(r.Context(), sheet, tab, r.PathValue("id"))
+	row, err := a.svc.Get(r.Context(), sheet, tab, pathValue(r, "id"))
 	return http.StatusOK, row, err
 }
 
@@ -162,12 +175,12 @@ func (a *API) update(r *http.Request, sheet, tab string) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	row, err := a.svc.Update(r.Context(), sheet, tab, r.PathValue("id"), fields)
+	row, err := a.svc.Update(r.Context(), sheet, tab, pathValue(r, "id"), fields)
 	return http.StatusOK, row, err
 }
 
 func (a *API) delete(r *http.Request, sheet, tab string) (int, any, error) {
-	id := r.PathValue("id")
+	id := pathValue(r, "id")
 	return http.StatusOK, map[string]string{"deleted": id}, a.svc.Delete(r.Context(), sheet, tab, id)
 }
 

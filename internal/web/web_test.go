@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 
@@ -97,10 +98,10 @@ func newTestDashboard(t *testing.T, sheetStore store.Store) (*Dashboard, *httpte
 		NewStore: func(int64) (store.Store, error) { return sheetStore, nil }}
 	dash := &Dashboard{DB: d, Auth: auth.New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"}), Tenants: tenants}
 	// The API routes too, so tests can use the keys they create.
-	mux := http.NewServeMux()
-	mux.Handle("/v1/", tenants)
-	mux.Handle("GET /openapi.json", tenants)
-	mux.Handle("/", dash.Handler())
+	mux := chi.NewRouter()
+	mux.Handle("/v1/*", tenants)
+	mux.Method("GET", "/openapi.json", tenants)
+	mux.Handle("/*", dash.Handler())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return dash, srv
