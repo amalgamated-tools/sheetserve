@@ -10,14 +10,38 @@ import (
 
 // Config is the server-wide settings. Each user's spreadsheets and keys are db.Settings.
 type Config struct {
-	Listen      string
-	CacheTTL    time.Duration
-	CORSOrigins []string
+	// Required server-wide settings
+	BaseURL             string // SHEETSERVE_BASE_URL
+	Secret              string // SHEETSERVE_SECRET
+	GoogleClientID      string // GOOGLE_CLIENT_ID
+	GoogleClientSecret  string // GOOGLE_CLIENT_SECRET
+	GooglePickerAPIKey  string // GOOGLE_PICKER_API_KEY
+	GoogleProjectNumber string // GOOGLE_PROJECT_NUMBER
+
+	// Optional server-wide settings
+	DatabaseURL string        // SHEETSERVE_DATABASE_URL
+	CacheTTL    time.Duration // SHEETSERVE_CACHE_TTL
+	CORSOrigins []string      // SHEETSERVE_CORS_ORIGINS
+	Listen      string        // PORT
 }
 
 // FromEnv reads the server-wide settings: PORT, SHEETSERVE_CACHE_TTL and SHEETSERVE_CORS_ORIGINS.
 func FromEnv() (*Config, error) {
-	c := Config{Listen: ":" + cmp.Or(os.Getenv("PORT"), "8085")}
+	c := Config{
+		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), "http://localhost:8085"),
+		Secret:              cmp.Or(os.Getenv("SHEETSERVE_SECRET"), ""),
+		GoogleClientID:      cmp.Or(os.Getenv("GOOGLE_CLIENT_ID"), ""),
+		GoogleClientSecret:  cmp.Or(os.Getenv("GOOGLE_CLIENT_SECRET"), ""),
+		GooglePickerAPIKey:  cmp.Or(os.Getenv("GOOGLE_PICKER_API_KEY"), ""),
+		GoogleProjectNumber: cmp.Or(os.Getenv("GOOGLE_PROJECT_NUMBER"), ""),
+	}
+	if !c.Validate() {
+		return nil, fmt.Errorf("invalid configuration")
+	}
+
+	c.Listen = cmp.Or(os.Getenv("PORT"), "8085")
+	c.DatabaseURL = cmp.Or(os.Getenv("SHEETSERVE_DB"), "sheetserve.db")
+
 	if ttl := os.Getenv("SHEETSERVE_CACHE_TTL"); ttl != "" {
 		d, err := time.ParseDuration(ttl)
 		if err != nil || d < 0 {
@@ -31,4 +55,9 @@ func FromEnv() (*Config, error) {
 		}
 	}
 	return &c, nil
+}
+
+// Validate checks if the required configuration fields are set.
+func (c *Config) Validate() bool {
+	return c.BaseURL != "" && c.Secret != "" && c.GoogleClientID != "" && c.GoogleClientSecret != "" && c.GooglePickerAPIKey != "" && c.GoogleProjectNumber != ""
 }
