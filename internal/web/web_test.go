@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 
+	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/auth"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -99,9 +100,12 @@ func newTestDashboard(t *testing.T, sheetStore store.Store) (*Dashboard, *httpte
 	dash := &Dashboard{DB: d, Auth: auth.New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"}), Tenants: tenants}
 	// The API routes too, so tests can use the keys they create.
 	mux := chi.NewRouter()
-	mux.Handle("/v1/*", tenants)
-	mux.Method("GET", "/openapi.json", tenants)
-	mux.Handle("/*", dash.Handler())
+	mux.Group(func(r chi.Router) {
+		r.Use(tenants.Middleware)
+		api.Routes(r)
+	})
+	dash.Routes(mux)
+	dash.Auth.Routes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return dash, srv

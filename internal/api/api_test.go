@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"google.golang.org/api/googleapi"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -543,5 +544,14 @@ func TestEscapedTabNames(t *testing.T) {
 		if status, body := call(t, h, "GET", path, "admin-key", ""); status != http.StatusOK || !strings.Contains(body, want) {
 			t.Errorf("GET %s: %d %s", path, status, body)
 		}
+	}
+}
+
+// Routes mounted without middleware that supplies an API fail closed instead of panicking.
+func TestRoutesWithoutAPI(t *testing.T) {
+	r := chi.NewRouter()
+	Routes(r)
+	if status, body := call(t, r, "GET", "/v1/shop/Orders", "admin-key", ""); status != http.StatusInternalServerError {
+		t.Errorf("got %d %s", status, body)
 	}
 }

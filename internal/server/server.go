@@ -124,13 +124,12 @@ func (s *Server) setupRoutes(ctx context.Context) {
 	s.router.Use(func(next http.Handler) http.Handler { return api.CORS(s.cfg.CORSOrigins, next) })
 	s.router.Mount("/debug", middleware.Profiler())
 
-	// Handle rather than Mount: the API and dashboard routers match on the full path.
-	s.router.Get("/login", s.auth.Login)
-	s.router.Get("/auth/callback", s.auth.Callback)
-	s.router.Handle("/v1/*", s.tenants)
-	s.router.Handle("/mcp", s.tenants)
-	s.router.Method("GET", "/openapi.json", s.tenants)
-	s.router.Handle("/*", s.dash.Handler())
+	s.auth.Routes(s.router)
+	s.dash.Routes(s.router)
+	s.router.Group(func(r chi.Router) {
+		r.Use(s.tenants.Middleware)
+		api.Routes(r)
+	})
 }
 
 // middlewareChain wraps next in the server's middleware. sentryhttp reuses

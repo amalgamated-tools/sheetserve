@@ -1,5 +1,5 @@
-// Package tenancy builds each user's API from their rows in the database and routes API requests
-// to it by bearer key.
+// Package tenancy builds each user's API from their rows in the database and picks it for each API
+// request by bearer key.
 package tenancy
 
 import (
@@ -29,29 +29,31 @@ type Tenants struct {
 }
 
 type tenant struct {
-	h   http.Handler
+	api *api.API
 	svc *service.Service
 }
 
-// ServeHTTP hands the request to the API of the user who owns the bearer key, if their role lets
-// their keys work.
-func (ts *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	userID, role, ok, err := ts.DB.KeyUser(r.Context(), db.HashKey(api.Bearer(r)))
-	var t *tenant
-	if err == nil && ok && role.Can(rbac.UseAPI) {
-		t, err = ts.tenant(r.Context(), userID)
-	}
-	switch {
-	case err != nil:
-		slog.Error("tenant", "user", userID, "err", err)
-		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream error"})
-	case !ok:
-		api.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
-	case !role.Can(rbac.UseAPI):
-		api.WriteJSON(w, http.StatusForbidden, map[string]string{"error": "the key's owner is not approved on this server"})
-	default:
-		t.h.ServeHTTP(w, r)
-	}
+// Middleware serves each request with the API of the user who owns the bearer key, if their role
+// lets their keys work. Put api.Routes behind it.
+func (ts *Tenants) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID, role, ok, err := ts.DB.KeyUser(r.Context(), db.HashKey(api.Bearer(r)))
+		var t *tenant
+		if err == nil && ok && role.Can(rbac.UseAPI) {
+			t, err = ts.tenant(r.Context(), userID)
+		}
+		switch {
+		case err != nil:
+			slog.Error("tenant", "user", userID, "err", err)
+			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream error"})
+		case !ok:
+			api.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
+		case !role.Can(rbac.UseAPI):
+			api.WriteJSON(w, http.StatusForbidden, map[string]string{"error": "the key's owner is not approved on this server"})
+		default:
+			next.ServeHTTP(w, r.WithContext(api.NewContext(r.Context(), t.api)))
+		}
+	})
 }
 
 // Service returns userID's service, built from their current settings.
@@ -94,7 +96,7 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 		ts.locks[userID] = &sync.Map{}
 	}
 	svc.UseLocks(ts.locks[userID])
-	t := &tenant{api.New(settings, svc).Mux(), svc}
+	t := &tenant{api.New(settings, svc), svc}
 	ts.tenants[userID] = t
 	return t, nil
 }

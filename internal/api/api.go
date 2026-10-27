@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -23,28 +24,63 @@ const Version = "0.1.0"
 type API struct {
 	settings *db.Settings
 	svc      *service.Service
+	mcp      http.Handler
 }
 
-type handlerFunc func(r *http.Request, sheet, tab string) (int, any, error)
+type handlerFunc func(a *API, r *http.Request, sheet, tab string) (int, any, error)
 
-func New(settings *db.Settings, svc *service.Service) *API { return &API{settings: settings, svc: svc} }
+func New(settings *db.Settings, svc *service.Service) *API {
+	a := &API{settings: settings, svc: svc}
+	a.mcp = a.mcpHandler()
+	return a
+}
 
-func (a *API) Mux() http.Handler { return a.mux() }
+type ctxKey struct{}
+
+// NewContext returns ctx carrying a, the API that serves requests made with ctx.
+func NewContext(ctx context.Context, a *API) context.Context {
+	return context.WithValue(ctx, ctxKey{}, a)
+}
+
+// Mux serves a alone, without tenancy.
+func (a *API) Mux() http.Handler {
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), a)))
+		})
+	})
+	Routes(r)
+	return r
+}
 
 func Bearer(r *http.Request) string { return bearer(r) }
 
 func WriteJSON(w http.ResponseWriter, status int, body any) { writeJSON(w, status, body) }
 
-func (a *API) mux() chi.Router {
-	r := chi.NewRouter()
-	r.Method("GET", "/v1/{sheet}/{tab}", a.endpoint("read", a.list))
-	r.Method("GET", "/v1/{sheet}/{tab}/{id}", a.endpoint("read", a.get))
-	r.Method("POST", "/v1/{sheet}/{tab}", a.endpoint("create", a.create))
-	r.Method("PATCH", "/v1/{sheet}/{tab}/{id}", a.endpoint("update", a.update))
-	r.Method("DELETE", "/v1/{sheet}/{tab}/{id}", a.endpoint("delete", a.delete))
-	r.Get("/openapi.json", a.openAPIHandler)
-	r.Handle("/mcp", a.mcpHandler())
-	return r
+// Routes adds the REST endpoints, the OpenAPI document and the MCP endpoint to r. Each request is
+// served by the API that middleware put in its context with NewContext.
+func Routes(r chi.Router) {
+	r.Method("GET", "/v1/{sheet}/{tab}", endpoint("read", (*API).list))
+	r.Method("GET", "/v1/{sheet}/{tab}/{id}", endpoint("read", (*API).get))
+	r.Method("POST", "/v1/{sheet}/{tab}", endpoint("create", (*API).create))
+	r.Method("PATCH", "/v1/{sheet}/{tab}/{id}", endpoint("update", (*API).update))
+	r.Method("DELETE", "/v1/{sheet}/{tab}/{id}", endpoint("delete", (*API).delete))
+	r.Get("/openapi.json", serve((*API).openAPIHandler))
+	r.Handle("/mcp", serve(func(a *API, w http.ResponseWriter, r *http.Request) { a.mcp.ServeHTTP(w, r) }))
+}
+
+// serve runs h with the request's API, or fails when no middleware supplied one.
+func serve(h func(*API, http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		a, ok := r.Context().Value(ctxKey{}).(*API)
+		if !ok {
+			slog.Error("api: no API in the request context", "path", r.URL.Path)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		h(a, w, r)
+	}
 }
 
 // pathValue returns the decoded path parameter name. chi matches on the escaped path when the
@@ -85,8 +121,8 @@ func CORS(origins []string, next http.Handler) http.Handler {
 }
 
 // endpoint authenticates, authorizes, runs h, and logs the outcome (including refusal reasons).
-func (a *API) endpoint(op string, h handlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func endpoint(op string, h handlerFunc) http.Handler {
+	return serve(func(a *API, w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sheet, tab := pathValue(r, "sheet"), pathValue(r, "tab")
 		key := a.settings.KeyFor(bearer(r))
@@ -100,7 +136,7 @@ func (a *API) endpoint(op string, h handlerFunc) http.Handler {
 			if !a.settings.Can(key, sheet, tab, op) {
 				return 0, nil, &service.APIError{Status: http.StatusForbidden, Msg: op + " not allowed on " + sheet + "/" + tab}
 			}
-			return h(r, sheet, tab)
+			return h(a, r, sheet, tab)
 		}()
 		reason := ""
 		if err != nil {

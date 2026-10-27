@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -46,11 +47,9 @@ func TestSignIn(t *testing.T) {
 	g.UserinfoURL = google.URL + "/userinfo"
 	var signedIn []int64
 	g.OnSignIn = func(id int64) { signedIn = append(signedIn, id) }
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /login", g.Login)
-	mux.HandleFunc("GET /auth/callback", g.Callback)
-	mux.HandleFunc("POST /logout", g.Logout)
-	mux.HandleFunc("GET /me", func(w http.ResponseWriter, r *http.Request) {
+	mux := chi.NewRouter()
+	g.Routes(mux)
+	mux.Get("/me", func(w http.ResponseWriter, r *http.Request) {
 		if u, ok := g.CurrentUser(r); ok {
 			_, _ = io.WriteString(w, u.Email)
 		}

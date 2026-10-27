@@ -119,9 +119,15 @@ type Dashboard struct {
 	AppID     string // Cloud project number, so picked files are granted to this app
 }
 
-// Handler serves the dashboard. It refuses cross-origin form posts.
-func (d *Dashboard) Handler() http.Handler {
-	mux := chi.NewRouter()
+// Routes adds the dashboard's pages and forms to r. It refuses cross-origin form posts.
+func (d *Dashboard) Routes(r chi.Router) {
+	r.Group(func(mux chi.Router) {
+		mux.Use(http.NewCrossOriginProtection().Handler)
+		d.routes(mux)
+	})
+}
+
+func (d *Dashboard) routes(mux chi.Router) {
 	mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := d.Auth.CurrentUser(r); ok {
 			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
@@ -139,7 +145,6 @@ func (d *Dashboard) Handler() http.Handler {
 	mux.Get(usersPage, d.signedIn(rbac.ManageUsers, func(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, page{Path: usersPage}, http.StatusOK)
 	}))
-	mux.Post("/logout", d.Auth.Logout)
 	mux.Get("/app/token", d.signedIn(rbac.EditOwn, d.token))
 	mux.Post("/app/sheets", d.signedIn(rbac.EditOwn, d.addSheet))
 	mux.Post("/app/sheets/new", d.signedIn(rbac.EditOwn, d.createSheet))
@@ -149,7 +154,6 @@ func (d *Dashboard) Handler() http.Handler {
 	mux.Post("/app/keys/delete", d.signedIn(rbac.EditOwn, d.deleteKey))
 	mux.Post("/app/users/role", d.signedIn(rbac.ManageUsers, d.setRole))
 	mux.Post("/app/users/delete", d.signedIn(rbac.ManageUsers, d.deleteUser))
-	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 // signedIn runs h for a signed-in user whose role grants perm. A user still waiting for approval
