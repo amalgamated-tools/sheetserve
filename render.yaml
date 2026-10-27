@@ -1,6 +1,4 @@
 # Fill in the GOOGLE_* and SHEETSERVE_SECRET values in the Render dashboard. See "Setup" in the README.
-# Optional service account: add a Secret File named service-account.json, then add the env var
-# GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/service-account.json.
 services:
   - type: web
     name: sheetserve

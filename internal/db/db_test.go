@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/pressly/goose/v3"
+
+	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 )
 
 // A new database runs every migration, and each one rolls back and reapplies cleanly.
@@ -37,7 +39,8 @@ func TestMigrations(t *testing.T) {
 	}
 }
 
-// A database made before goose, without the service_account column, adopts goose and gains the column.
+// A database made before goose adopts it and runs every migration. Its users keep their access as
+// members, and the oldest becomes admin.
 func TestSchemaUpgrade(t *testing.T) {
 	path := t.TempDir() + "/old.db"
 	old, err := sql.Open("sqlite", path)
@@ -47,20 +50,24 @@ func TestSchemaUpgrade(t *testing.T) {
 	if _, err := old.Exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL, refresh_token BLOB);
 		CREATE TABLE spreadsheets (user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE, name TEXT NOT NULL,
 			google_id TEXT NOT NULL, title TEXT NOT NULL, PRIMARY KEY (user_id, name));
-		INSERT INTO users (id, google_sub, email) VALUES (1, 's', 's@example.com');
+		INSERT INTO users (id, google_sub, email) VALUES (1, 's', 's@example.com'), (2, 't', 't@example.com');
 		INSERT INTO spreadsheets VALUES (1, 'shop', 'SS', 'Shop');`); err != nil {
 		t.Fatal(err)
 	}
 	_ = old.Close()
-	for range 2 { // the second open must find the column already there
+	for range 2 { // the second open must find nothing left to run
 		db, err := Open(path, make([]byte, 32))
 		if err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := db.UserSettings(context.Background(), 1)
-		_ = db.Close()
-		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" || cfg.Spreadsheets["shop"].ServiceAccount {
+		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" {
 			t.Fatalf("upgraded config: %+v %v", cfg, err)
+		}
+		users, err := db.Users(context.Background())
+		_ = db.Close()
+		if err != nil || len(users) != 2 || users[0].Role != rbac.Admin || users[1].Role != rbac.Member {
+			t.Fatalf("upgraded users: %+v %v", users, err)
 		}
 	}
 }
@@ -80,7 +87,7 @@ func TestDashboardChanges(t *testing.T) {
 	}
 	for _, s := range []Spreadsheet{
 		{Name: "shop", GoogleID: "SS", Title: "Shop", Tabs: []string{"Orders", "Items"}},
-		{Name: "crm", GoogleID: "CC", Title: "CRM", ServiceAccount: true, Tabs: []string{"People"}},
+		{Name: "crm", GoogleID: "CC", Title: "CRM", Tabs: []string{"People"}},
 	} {
 		if err := db.AddSpreadsheet(ctx, id, s); err != nil {
 			t.Fatal(err)
@@ -99,7 +106,7 @@ func TestDashboardChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sheets) != 2 || sheets[0].Name != "crm" || !sheets[0].ServiceAccount || !slices.Equal(sheets[1].Tabs, []string{"Orders", "Items"}) {
+	if len(sheets) != 2 || sheets[0].Name != "crm" || !slices.Equal(sheets[1].Tabs, []string{"Orders", "Items"}) {
 		t.Errorf("spreadsheets: %+v", sheets)
 	}
 	if rule := cfg.Spreadsheets["shop"].Tabs["Orders"]; !slices.Equal(rule.Ops, []string{"read"}) || rule.KeyColumn() != "id" || len(cfg.Keys) != 0 {
@@ -113,5 +120,43 @@ func TestDashboardChanges(t *testing.T) {
 	}
 	if exists, err := db.SpreadsheetExists(ctx, id, "crm"); err != nil || exists {
 		t.Errorf("crm after delete: %v %v", exists, err)
+	}
+}
+
+// The first user is admin and later ones pending. A role change or removal that would leave no
+// admin is refused.
+func TestRoles(t *testing.T) {
+	db, err := Open(t.TempDir()+"/roles.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	var ids []int64
+	for _, sub := range []string{"a", "b", "a"} { // a signs in twice
+		id, err := db.UpsertUser(ctx, sub, sub+"@example.com", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	users, err := db.Users(ctx)
+	if err != nil || len(users) != 2 || users[0].Role != rbac.Admin || users[1].Role != rbac.Pending || ids[2] != ids[0] {
+		t.Fatalf("users: %+v %v", users, err)
+	}
+	if err := db.SetRole(ctx, ids[0], rbac.Member); err == nil || !strings.Contains(err.Error(), "at least one admin") {
+		t.Errorf("demote the last admin: %v", err)
+	}
+	if err := db.DeleteUser(ctx, ids[0]); err == nil {
+		t.Error("removed the last admin")
+	}
+	if err := db.SetRole(ctx, 99, rbac.Member); err == nil {
+		t.Error("set the role of an unknown user")
+	}
+	if err := db.SetRole(ctx, ids[1], rbac.Admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteUser(ctx, ids[0]); err != nil {
+		t.Errorf("remove one of two admins: %v", err)
 	}
 }

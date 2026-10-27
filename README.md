@@ -37,7 +37,6 @@ Environment variables:
 | `SHEETSERVE_CACHE_TTL` | Optional. How long to cache reads, such as `60s`. Defaults to no cache. |
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
 | `PORT` | Optional. Listen port. Defaults to `8080`. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Optional. Path to a service account JSON key. See [Service account](#service-account-optional). |
 
 ```sh
 cp .env.example .env   # fill it in
@@ -65,21 +64,21 @@ Customers: name, email
 The server creates the spreadsheet in your Drive with your Google account, writes and freezes each header row,
 and puts an `id` column first unless you list one. `drive.file` covers files the app creates, so you don't need to pick it.
 
-By default, a key acts through the Google account of the user who made it.
+A key acts through the Google account of the user who made it.
 
-## Service account (optional)
+## Users
 
-If `GOOGLE_APPLICATION_CREDENTIALS` points at a service account key, the dashboard also offers "Add by URL".
-A user shares a spreadsheet with the service account's email address, which the dashboard shows, and pastes its URL.
-Give the service account Viewer access for read-only use, or Editor access for writes.
-The server then reaches that spreadsheet with the service account, not with the user's Google token. So:
+The first person to sign in becomes the admin. Everyone after that waits as pending until an admin approves them on the Users page.
+Pending users can't add spreadsheets or make keys, and their keys return `403`.
 
-- Keys for that spreadsheet keep working if the user revokes the app's access to their Google account.
-- Any spreadsheet shared with the service account works, not only ones picked in the Drive picker.
-- Anyone who can sign in can add any spreadsheet that is shared with the service account. Share with it only what all users may reach.
+| Role | Can |
+|---|---|
+| `admin` | Everything a member can, and approve users, change their roles, or remove them |
+| `member` | Add spreadsheets, set tab rules, and make keys that work |
+| `pending` | Nothing yet. They see a "waiting for approval" page |
 
-To set one up, create a service account in the same Cloud project, download its JSON key, and set `GOOGLE_APPLICATION_CREDENTIALS` to the file's path.
-If you remove the service account later, only the spreadsheets added by URL stop working. Their API calls return `502`.
+Each user only sees their own spreadsheets and keys, admins included. Removing a user deletes their spreadsheets and keys.
+The server always keeps at least one admin.
 
 ## API
 
@@ -137,7 +136,6 @@ Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and 
 
 `docker build -t sheetserve .`, or use `render.yaml` on Render.
 After deploying on Render, fill in the `GOOGLE_*` and `SHEETSERVE_SECRET` variables. The database lives on the service's disk at `/var/data`.
-To add a service account, add `service-account.json` as a Secret File and set `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/service-account.json`.
 
 ## Development
 
@@ -158,7 +156,9 @@ They are built into the binary, and the server applies new ones when it opens th
 mise loads `.env` into every task, if the file exists. Copy `.env.example` to `.env` and fill it in.
 
 `mise run test:live` runs `TestLive` against a real spreadsheet. It creates a scratch tab and deletes it afterwards.
-It needs `GOOGLE_APPLICATION_CREDENTIALS` and `SHEETSERVE_LIVE_SHEET_ID`, set to a spreadsheet that the service account can edit.
+It needs `SHEETSERVE_LIVE_SHEET_ID`, set to a spreadsheet that the test's Google credentials can edit.
+The test uses Application Default Credentials, such as a key file named by `GOOGLE_APPLICATION_CREDENTIALS`.
+The server itself does not use them.
 Without `SHEETSERVE_LIVE_SHEET_ID`, the test skips.
 
 CI (`.github/workflows/ci.yml`) runs `mise run check` and `mise run build` on pushes to `main` and on pull requests.
@@ -167,7 +167,6 @@ CI (`.github/workflows/ci.yml`) runs `mise run check` and `mise run build` on pu
 
 - Run one instance only. The cache, the write locks and the per-user state live in the process.
 - Two users who add the same spreadsheet do not share write locks.
-- If a user revokes the app's access in their Google account, their keys return `502` for spreadsheets
-  added from Drive until they sign in again. Spreadsheets added through the service account keep working.
+- If a user revokes the app's access in their Google account, their keys return `502` until they sign in again.
 - An update or delete finds its row by key just before it writes. If someone inserts or deletes rows by hand in the sheet at that moment, the write can land on the wrong row.
 - Filters read the whole tab. Very large tabs will be slow until the cache has them.

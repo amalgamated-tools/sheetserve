@@ -51,8 +51,8 @@ func TestSignIn(t *testing.T) {
 	mux.HandleFunc("GET /auth/callback", g.Callback)
 	mux.HandleFunc("POST /logout", g.Logout)
 	mux.HandleFunc("GET /me", func(w http.ResponseWriter, r *http.Request) {
-		if _, email, ok := g.CurrentUser(r); ok {
-			_, _ = io.WriteString(w, email)
+		if u, ok := g.CurrentUser(r); ok {
+			_, _ = io.WriteString(w, u.Email)
 		}
 	})
 	srv := httptest.NewServer(mux)

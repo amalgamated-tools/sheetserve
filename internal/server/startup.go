@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,8 +24,7 @@ import (
 )
 
 // newHandler sets up the server: Google sign-in, with each user's spreadsheets and keys kept in
-// SQLite. If GOOGLE_APPLICATION_CREDENTIALS names a service account key, users can also add
-// spreadsheets that the server reaches with that service account.
+// SQLite and reached with that user's Google token.
 func newHandler(cfg *config.Config) (http.Handler, error) {
 	env := map[string]string{"SHEETSERVE_BASE_URL": os.Getenv("RENDER_EXTERNAL_URL")}
 	var missing []string
@@ -59,14 +57,6 @@ func newHandler(cfg *config.Config) (http.Handler, error) {
 		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
 	})
 	dash.PickerKey, dash.AppID = env["GOOGLE_PICKER_API_KEY"], env["GOOGLE_PROJECT_NUMBER"]
-	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
-		if dash.SAEmail, err = serviceAccountEmail(path); err != nil {
-			return nil, err
-		}
-		if dash.Tenants.SAStore, err = store.NewGoogleStore(context.Background()); err != nil {
-			return nil, fmt.Errorf("service account: %w", err)
-		}
-	}
 	return routes(cfg, dash), nil
 }
 
@@ -95,21 +85,4 @@ func routes(global *config.Config, dash *web.Dashboard) http.Handler {
 	mux.Handle("GET /openapi.json", dash.Tenants)
 	mux.Handle("/", dash.Handler())
 	return api.CORS(global.CORSOrigins, mux)
-}
-
-// serviceAccountEmail reads client_email from a service account key file, so the dashboard can
-// tell users which address to share their spreadsheets with.
-func serviceAccountEmail(path string) (string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS: %w", err)
-	}
-	var key struct {
-		Type        string `json:"type"`
-		ClientEmail string `json:"client_email"`
-	}
-	if err := json.Unmarshal(b, &key); err != nil || key.Type != "service_account" || key.ClientEmail == "" {
-		return "", fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS: %s is not a service account key file", path)
-	}
-	return key.ClientEmail, nil
 }

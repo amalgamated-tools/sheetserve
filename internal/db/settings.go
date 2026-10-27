@@ -21,9 +21,8 @@ type Settings struct {
 }
 
 type SheetRule struct {
-	ID             string
-	ServiceAccount bool // reached with the server's service account instead of the owner's Google token
-	Tabs           map[string]TabRule
+	ID   string
+	Tabs map[string]TabRule
 }
 
 type TabRule struct {

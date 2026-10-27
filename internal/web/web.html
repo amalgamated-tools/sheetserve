@@ -128,6 +128,7 @@
   <nav class="nav" aria-label="Pages">
     <a href="/sheets"{{if eq .Section "/sheets"}} aria-current="page"{{end}}>Spreadsheets <span class="badge">{{len .Sheets}}</span></a>
     <a href="/keys"{{if eq .Section "/keys"}} aria-current="page"{{end}}>API keys <span class="badge">{{len .Keys}}</span></a>
+    {{if .Admin}}<a href="/users"{{if eq .Section "/users"}} aria-current="page"{{end}}>Users</a>{{end}}
   </nav>
   <form class="who" method="post" action="/logout"><span>{{.Email}}</span> <button class="small">Sign out</button></form>
 </div></div>
@@ -183,7 +184,7 @@ document.querySelectorAll("form[data-confirm]").forEach((f) => {
 {{range .Sheets}}{{$sheet := .Name}}
 <section class="card" id="sheet-{{.Name}}">
   <div class="card-head">
-    <div><h3>{{.Name}}</h3> <small><a href="https://docs.google.com/spreadsheets/d/{{.GoogleID}}/edit" target="_blank" rel="noopener" title="Open in Google Sheets">{{.Title}} ↗</a></small>{{if .ServiceAccount}} <span class="badge">via service account</span>{{end}}</div>
+    <div><h3>{{.Name}}</h3> <small><a href="https://docs.google.com/spreadsheets/d/{{.GoogleID}}/edit" target="_blank" rel="noopener" title="Open in Google Sheets">{{.Title}} ↗</a></small></div>
     <form class="inline" method="post" action="/app/sheets/delete" data-confirm="Remove {{.Name}}? Keys scoped to it stop working.">
       <input type="hidden" name="name" value="{{.Name}}"><button class="danger small">Remove</button>
     </form>
@@ -224,20 +225,6 @@ document.querySelectorAll("form[data-confirm]").forEach((f) => {
     <div class="actions"><button class="primary">Add</button> <button type="button" id="add-cancel">Cancel</button></div>
   </form>
 </section>
-
-{{if .SAEmail}}
-<section class="card">
-  <h3>By URL, with the service account</h3>
-  <form method="post" action="/app/sheets">
-    <p>Share a spreadsheet with <code>{{.SAEmail}}</code> (Viewer to read, Editor to write) and add it by URL.
-    The server then reaches it with its service account, so its keys don't depend on your Google sign-in.</p>
-    <input type="hidden" name="via" value="service_account">
-    <label class="field"><span>Spreadsheet URL</span><input type="url" name="url" placeholder="https://docs.google.com/spreadsheets/d/…" required></label>
-    <label class="field"><span>Name in URLs</span><input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
-    <div class="actions"><button>Add by URL</button></div>
-  </form>
-</section>
-{{end}}
 
 {{template "scripts"}}
 <script src="https://apis.google.com/js/api.js"></script>
@@ -322,6 +309,42 @@ pick.onclick = async () => {
   </table></div>
 </section>
 {{template "scripts"}}
+</body></html>
+{{end}}
+
+{{define "users"}}{{template "top" .}}
+<div class="page-head">
+  <h1>Users</h1>
+  <p>Everyone who has signed in. New users wait as pending until you approve them. Pending users can't change anything, and their keys get 403.</p>
+</div>
+
+<section class="card"><div class="table-wrap"><table>
+  <tr><th>Email</th><th>Role</th><th></th></tr>
+  {{range .Users}}{{$f := printf "user-%d" .ID}}
+  <tr>
+    <td><strong>{{.Email}}</strong>{{if .You}} <span class="badge">you</span>{{end}}</td>
+    <td><select form="{{$f}}" name="role" aria-label="Role for {{.Email}}">{{$role := .Role}}{{range $.Roles}}<option value="{{.}}"{{if eq . $role}} selected{{end}}>{{.}}</option>{{end}}</select></td>
+    <td class="right">
+      <form id="{{$f}}" class="inline" method="post" action="/app/users/role"><input type="hidden" name="id" value="{{.ID}}"><button class="small">Save</button></form>
+      <form class="inline" method="post" action="/app/users/delete" data-confirm="Remove {{.Email}}? Their spreadsheets and keys are deleted, and their keys stop working.">
+        <input type="hidden" name="id" value="{{.ID}}"><button class="danger small">Remove</button></form>
+    </td>
+  </tr>
+  {{end}}
+</table></div></section>
+{{template "scripts"}}
+</body></html>
+{{end}}
+
+{{define "pending"}}{{template "head" .Title}}
+<div class="login">
+  <div class="card">
+    <span class="brand" style="justify-content:center">{{template "logo"}}</span>
+    <h1>Waiting for approval</h1>
+    <p class="muted">You're signed in as {{.Email}}. An admin of this server needs to approve you before you can add spreadsheets or make keys.</p>
+    <form method="post" action="/logout"><button>Sign out</button></form>
+  </div>
+</div>
 </body></html>
 {{end}}
 
