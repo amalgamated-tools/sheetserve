@@ -41,7 +41,6 @@ func main() {
 func realMain(ctx context.Context) error {
 	cfg, err := config.FromEnv()
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to load config", slog.Any("error", err))
 		return err
 	}
 	shutdownTelemetry, err := otel.SetupRuntimeTelemetry(ctx, ShutdownTimeout)
@@ -50,11 +49,12 @@ func realMain(ctx context.Context) error {
 		return fmt.Errorf("failed to set up telemetry: %w", err)
 	}
 	defer shutdownTelemetry()
+
 	h, err := server.NewHandler(cfg)
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Addr: cfg.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}
-	slog.Info("listening", "addr", cfg.Listen, "version", api.Version)
+	srv := &http.Server{Addr: ":" + cfg.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	slog.Info("listening", "addr", ":"+cfg.Listen, "version", api.Version)
 	return srv.ListenAndServe()
 }
