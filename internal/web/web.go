@@ -18,7 +18,6 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/auth"
-	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
@@ -342,7 +341,7 @@ func (d *Dashboard) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 			return
 		}
 	}
-	rule := config.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
+	rule := db.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
 	d.change(w, r, u, sheetsPage+"#sheet-"+sheet, d.DB.SaveTab(r.Context(), u.id, sheet, tab, rule))
 }
 
@@ -372,9 +371,9 @@ func (d *Dashboard) createKey(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, page{Path: keysPage, Error: "pick at least one tab for the key"}, http.StatusBadRequest)
 		return
 	}
-	key := config.NewKey()
-	err := d.DB.CreateKey(r.Context(), u.id, config.Key{
-		Hash: config.HashKey(key), Name: strings.TrimSpace(r.FormValue("name")), Tabs: r.Form["tabs"], Ops: r.Form["ops"],
+	key := db.NewKey()
+	err := d.DB.CreateKey(r.Context(), u.id, db.Key{
+		Hash: db.HashKey(key), Name: strings.TrimSpace(r.FormValue("name")), Tabs: r.Form["tabs"], Ops: r.Form["ops"],
 	})
 	if err != nil {
 		d.render(w, r, u, page{Path: keysPage, Error: userMessage(err)}, http.StatusBadRequest)
@@ -402,9 +401,12 @@ func (d *Dashboard) change(w http.ResponseWriter, r *http.Request, u user, to st
 
 func userMessage(err error) string {
 	var ae *service.APIError
+	var ve db.ValidationError
 	switch {
 	case errors.As(err, &ae):
 		return ae.Msg
+	case errors.As(err, &ve):
+		return ve.Error()
 	case strings.Contains(err.Error(), "UNIQUE constraint failed"):
 		return "that name is already in use"
 	}
@@ -418,7 +420,7 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, p pag
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
 	}
-	p.Email, p.PickerKey, p.AppID, p.SAEmail, p.AllOps = u.email, d.PickerKey, d.AppID, d.SAEmail, config.AllOps
+	p.Email, p.PickerKey, p.AppID, p.SAEmail, p.AllOps = u.email, d.PickerKey, d.AppID, d.SAEmail, db.AllOps
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := webTmpl.ExecuteTemplate(w, strings.TrimPrefix(p.Path, "/"), p); err != nil {
@@ -428,7 +430,7 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, p pag
 
 // load fills p with userID's spreadsheets, tabs and keys, in display order.
 func (d *Dashboard) load(ctx context.Context, userID int64, p *page) error {
-	sheets, cfg, err := d.DB.Spreadsheets(ctx, userID)
+	sheets, settings, err := d.DB.Spreadsheets(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -439,7 +441,7 @@ func (d *Dashboard) load(ctx context.Context, userID int64, p *page) error {
 	}
 	for i, s := range sheets {
 		for _, tab := range s.Tabs {
-			rule := cfg.Spreadsheets[s.Name].Tabs[tab]
+			rule := settings.Spreadsheets[s.Name].Tabs[tab]
 			key := rule.KeyColumn()
 			if key == "id" {
 				key = ""
@@ -448,7 +450,7 @@ func (d *Dashboard) load(ctx context.Context, userID int64, p *page) error {
 			p.TabSpecs = append(p.TabSpecs, s.Name+"/"+tab)
 		}
 	}
-	for _, k := range cfg.Keys {
+	for _, k := range settings.Keys {
 		ops := "all the tab allows"
 		if len(k.Ops) > 0 {
 			ops = strings.Join(k.Ops, ", ")

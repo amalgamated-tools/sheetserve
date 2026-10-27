@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"google.golang.org/api/option"
@@ -64,13 +64,13 @@ func TestLive(t *testing.T) {
 	}
 	setRow("A1", []any{"id", "item", "qty", "total", "secret"}, "RAW")
 
-	cfg := &config.Config{Spreadsheets: map[string]config.Spreadsheet{"live": {ID: sheetID, Tabs: map[string]config.TabRule{
-		tab: {Ops: config.AllOps, Hidden: []string{"secret"}},
+	cfg := &db.Settings{Spreadsheets: map[string]db.SheetRule{"live": {ID: sheetID, Tabs: map[string]db.TabRule{
+		tab: {Ops: db.AllOps, Hidden: []string{"secret"}},
 	}}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(cfg, gs)
+	svc := service.New(cfg, gs, 0)
 
 	// Create: lands in columns A.., number stays a number, formula-looking input stays text.
 	a, err := svc.Create(ctx, "live", tab, map[string]any{"item": "=1+1", "qty": 2})

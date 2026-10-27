@@ -17,9 +17,6 @@ import (
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
-
-	"github.com/amalgamated-tools/sheetserve/internal/config"
-	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 // DB holds the server's state: users, their sessions, and each user's spreadsheets, tabs and keys.
@@ -118,14 +115,14 @@ func (d *DB) NewSession(ctx context.Context, userID int64) (string, error) {
 		return "", err
 	}
 	_, err := d.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)`,
-		config.HashKey(tok), userID, now.Add(SessionTTL).Unix())
+		HashKey(tok), userID, now.Add(SessionTTL).Unix())
 	return tok, err
 }
 
 // SessionUser returns the user behind a live session token, or ok=false.
 func (d *DB) SessionUser(ctx context.Context, tok string) (id int64, email string, ok bool, err error) {
 	err = d.QueryRowContext(ctx, `SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = ? AND s.expires_at > ?`, config.HashKey(tok), time.Now().Unix()).Scan(&id, &email)
+		WHERE s.token_hash = ? AND s.expires_at > ?`, HashKey(tok), time.Now().Unix()).Scan(&id, &email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", false, nil
 	}
@@ -133,7 +130,7 @@ func (d *DB) SessionUser(ctx context.Context, tok string) (id int64, email strin
 }
 
 func (d *DB) DeleteSession(ctx context.Context, tok string) error {
-	_, err := d.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, config.HashKey(tok))
+	_, err := d.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, HashKey(tok))
 	return err
 }
 
@@ -154,19 +151,18 @@ type Spreadsheet struct {
 	Tabs           []string
 }
 
-// UserConfig builds userID's spreadsheets and keys into a validated Config. The server-wide
-// settings (listen, cache_ttl, cors_origins) are left for the caller to fill in.
-func (d *DB) UserConfig(ctx context.Context, userID int64) (cfg *config.Config, err error) {
+// UserSettings reads userID's spreadsheets and keys into validated Settings.
+func (d *DB) UserSettings(ctx context.Context, userID int64) (settings *Settings, err error) {
 	err = d.snapshot(ctx, func(tx *sql.Tx) error {
-		cfg, err = userConfig(ctx, tx, userID)
+		settings, err = userSettings(ctx, tx, userID)
 		return err
 	})
-	return cfg, err
+	return settings, err
 }
 
-// Spreadsheets returns userID's spreadsheets by name, and the Config they make, read together so
+// Spreadsheets returns userID's spreadsheets by name, and the Settings they make, read together so
 // they agree.
-func (d *DB) Spreadsheets(ctx context.Context, userID int64) (sheets []Spreadsheet, cfg *config.Config, err error) {
+func (d *DB) Spreadsheets(ctx context.Context, userID int64) (sheets []Spreadsheet, settings *Settings, err error) {
 	err = d.snapshot(ctx, func(tx *sql.Tx) error {
 		err := scan(ctx, tx, `SELECT name, title, google_id, service_account FROM spreadsheets WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 			var s Spreadsheet
@@ -192,10 +188,10 @@ func (d *DB) Spreadsheets(ctx context.Context, userID int64) (sheets []Spreadshe
 		if err != nil {
 			return err
 		}
-		cfg, err = userConfig(ctx, tx, userID)
+		settings, err = userSettings(ctx, tx, userID)
 		return err
 	})
-	return sheets, cfg, err
+	return sheets, settings, err
 }
 
 // SpreadsheetExists reports whether userID already has a spreadsheet called name.
@@ -232,7 +228,7 @@ func (d *DB) DeleteSpreadsheet(ctx context.Context, userID int64, name string) e
 }
 
 // SaveTab sets the ops, hidden columns and key column of one of userID's tabs.
-func (d *DB) SaveTab(ctx context.Context, userID int64, sheet, tab string, rule config.TabRule) error {
+func (d *DB) SaveTab(ctx context.Context, userID int64, sheet, tab string, rule TabRule) error {
 	return d.update(ctx, userID, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
 			jsonList(rule.Ops), jsonList(rule.Hidden), cmp.Or(rule.Key, "id"), userID, sheet, tab)
@@ -240,14 +236,14 @@ func (d *DB) SaveTab(ctx context.Context, userID int64, sheet, tab string, rule 
 			return err
 		}
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
-			return cmp.Or(err, service.BadRequest("unknown tab"))
+			return cmp.Or(err, error(ValidationError("unknown tab")))
 		}
 		return nil
 	})
 }
 
 // CreateKey stores k (its hash, never the key itself) for userID.
-func (d *DB) CreateKey(ctx context.Context, userID int64, k config.Key) error {
+func (d *DB) CreateKey(ctx context.Context, userID int64, k Key) error {
 	return d.update(ctx, userID, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO api_keys (hash, user_id, name, tabs, ops) VALUES (?, ?, ?, ?, ?)`,
 			k.Hash, userID, k.Name, jsonList(k.Tabs), jsonList(k.Ops))
@@ -267,35 +263,35 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// userConfig reads userID's spreadsheets, tabs and keys from q and validates them.
-func userConfig(ctx context.Context, q querier, userID int64) (*config.Config, error) {
-	cfg := &config.Config{Spreadsheets: map[string]config.Spreadsheet{}}
+// userSettings reads userID's spreadsheets, tabs and keys from q and validates them.
+func userSettings(ctx context.Context, q querier, userID int64) (*Settings, error) {
+	settings := &Settings{Spreadsheets: map[string]SheetRule{}}
 	err := scan(ctx, q, `SELECT name, google_id, service_account FROM spreadsheets WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 		var name, id string
 		var sa bool
 		if err := rows.Scan(&name, &id, &sa); err != nil {
 			return err
 		}
-		cfg.Spreadsheets[name] = config.Spreadsheet{ID: id, ServiceAccount: sa, Tabs: map[string]config.TabRule{}}
+		settings.Spreadsheets[name] = SheetRule{ID: id, ServiceAccount: sa, Tabs: map[string]TabRule{}}
 		return nil
 	})
 	if err == nil {
 		err = scan(ctx, q, `SELECT sheet, tab, ops, hidden, key_column FROM tabs WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
 			var sheet, tab, ops, hidden string
-			var rule config.TabRule
+			var rule TabRule
 			if err := rows.Scan(&sheet, &tab, &ops, &hidden, &rule.Key); err != nil {
 				return err
 			}
 			if err := errors.Join(json.Unmarshal([]byte(ops), &rule.Ops), json.Unmarshal([]byte(hidden), &rule.Hidden)); err != nil {
 				return err
 			}
-			cfg.Spreadsheets[sheet].Tabs[tab] = rule
+			settings.Spreadsheets[sheet].Tabs[tab] = rule
 			return nil
 		})
 	}
 	if err == nil {
 		err = scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
-			var k config.Key
+			var k Key
 			var tabs, ops string
 			if err := rows.Scan(&k.Hash, &k.Name, &tabs, &ops); err != nil {
 				return err
@@ -303,17 +299,17 @@ func userConfig(ctx context.Context, q querier, userID int64) (*config.Config, e
 			if err := errors.Join(json.Unmarshal([]byte(tabs), &k.Tabs), json.Unmarshal([]byte(ops), &k.Ops)); err != nil {
 				return err
 			}
-			cfg.Keys = append(cfg.Keys, k)
+			settings.Keys = append(settings.Keys, k)
 			return nil
 		})
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.Validate(); err != nil {
-		return nil, service.BadRequest("%v", err)
+	if err := settings.Validate(); err != nil {
+		return nil, ValidationError(err.Error())
 	}
-	return cfg, nil
+	return settings, nil
 }
 
 func scan(ctx context.Context, q querier, query string, userID int64, fn func(*sql.Rows) error) error {
@@ -340,7 +336,7 @@ func (d *DB) snapshot(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return fn(tx)
 }
 
-// update runs fn in a transaction and commits only if userID's resulting config still validates,
+// update runs fn in a transaction and commits only if userID's resulting settings still validate,
 // so Validate checks every dashboard change.
 func (d *DB) update(ctx context.Context, userID int64, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, nil)
@@ -351,7 +347,7 @@ func (d *DB) update(ctx context.Context, userID int64, fn func(tx *sql.Tx) error
 	if err := fn(tx); err != nil {
 		return err
 	}
-	if _, err := userConfig(ctx, tx, userID); err != nil {
+	if _, err := userSettings(ctx, tx, userID); err != nil {
 		return err
 	}
 	return tx.Commit()

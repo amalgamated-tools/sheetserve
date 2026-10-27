@@ -91,9 +91,6 @@ func newTestDashboard(t *testing.T, sheetStore store.Store) (*Dashboard, *httpte
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	global := &config.Config{}
-	if err := global.Validate(); err != nil {
-		t.Fatal(err)
-	}
 	tenants := &tenancy.Tenants{DB: d, Global: global,
 		NewStore: func(int64) (store.Store, error) { return sheetStore, nil }}
 	dash := &Dashboard{DB: d, Auth: auth.New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"}), Tenants: tenants}

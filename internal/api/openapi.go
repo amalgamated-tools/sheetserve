@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
@@ -18,7 +18,7 @@ type obj = map[string]any
 // openAPIHandler serves an OpenAPI 3.1 spec covering only what the caller's key can reach.
 func (a *API) openAPIHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	key := a.cfg.KeyFor(bearer(r))
+	key := a.settings.KeyFor(bearer(r))
 	status, keyName, reason := http.StatusOK, "", ""
 	if key == nil {
 		status, reason = http.StatusUnauthorized, "missing or invalid API key"
@@ -31,7 +31,7 @@ func (a *API) openAPIHandler(w http.ResponseWriter, r *http.Request) {
 		"status", status, "reason", reason, "duration_ms", time.Since(start).Milliseconds())
 }
 
-func (a *API) openAPI(ctx context.Context, key *config.Key) obj {
+func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 	schemas := obj{"Error": object(obj{"error": obj{"type": "string"}}, "error")}
 	paths := obj{}
 	a.eachTab(ctx, key, func(name, sheet, tab, rowKey string, ops, cols []string) {

@@ -94,7 +94,7 @@ func routes(global *config.Config, dash *web.Dashboard) http.Handler {
 	mux.Handle("/mcp", dash.Tenants)
 	mux.Handle("GET /openapi.json", dash.Tenants)
 	mux.Handle("/", dash.Handler())
-	return api.CORS(global, mux)
+	return api.CORS(global.CORSOrigins, mux)
 }
 
 // serviceAccountEmail reads client_email from a service account key file, so the dashboard can

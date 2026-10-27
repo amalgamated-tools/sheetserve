@@ -20,7 +20,7 @@ import (
 // server's service account for spreadsheets added that way. Set the fields before first use.
 type Tenants struct {
 	DB       *db.DB
-	Global   *config.Config // listen, cache_ttl and cors_origins; spreadsheets and keys come from DB
+	Global   *config.Config // server-wide settings; each user's spreadsheets and keys come from DB
 	NewStore func(userID int64) (store.Store, error)
 	SAStore  store.Store // the server's service account; nil when none is configured
 
@@ -36,7 +36,7 @@ type tenant struct {
 
 // ServeHTTP hands the request to the API of the user who owns the bearer key.
 func (ts *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	userID, ok, err := ts.DB.KeyUser(r.Context(), config.HashKey(api.Bearer(r)))
+	userID, ok, err := ts.DB.KeyUser(r.Context(), db.HashKey(api.Bearer(r)))
 	var t *tenant
 	if err == nil && ok {
 		t, err = ts.tenant(r.Context(), userID)
@@ -78,11 +78,10 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 	if ts.tenants == nil {
 		ts.tenants, ts.locks = map[int64]*tenant{}, map[int64]*sync.Map{}
 	}
-	cfg, err := ts.DB.UserConfig(ctx, userID)
+	settings, err := ts.DB.UserSettings(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Listen, cfg.CacheTTL, cfg.CORSOrigins = ts.Global.Listen, ts.Global.CacheTTL, ts.Global.CORSOrigins
 	rs := routedStore{sa: ts.SAStore, viaSA: map[string]bool{}}
 	// Without the user's token, their service account spreadsheets still work.
 	if rs.user, err = ts.NewStore(userID); err != nil {
@@ -91,18 +90,18 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 	if rs.sa == nil {
 		rs.sa = errStore{errors.New("spreadsheet needs the service account, but the server has none configured")}
 	}
-	for _, ss := range cfg.Spreadsheets {
+	for _, ss := range settings.Spreadsheets {
 		if ss.ServiceAccount {
 			rs.viaSA[ss.ID] = true
 		}
 	}
-	svc := service.New(cfg, rs)
+	svc := service.New(settings, rs, ts.Global.CacheTTL)
 	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
 	if ts.locks[userID] == nil {
 		ts.locks[userID] = &sync.Map{}
 	}
 	svc.UseLocks(ts.locks[userID])
-	t := &tenant{api.New(cfg, svc).Mux(), svc}
+	t := &tenant{api.New(settings, svc).Mux(), svc}
 	ts.tenants[userID] = t
 	return t, nil
 }

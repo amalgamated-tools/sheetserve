@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	"github.com/pressly/goose/v3"
-
-	"github.com/amalgamated-tools/sheetserve/internal/config"
 )
 
 // A new database runs every migration, and each one rolls back and reapplies cleanly.
@@ -59,7 +57,7 @@ func TestSchemaUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := db.UserConfig(context.Background(), 1)
+		cfg, err := db.UserSettings(context.Background(), 1)
 		_ = db.Close()
 		if err != nil || cfg.Spreadsheets["shop"].ID != "SS" || cfg.Spreadsheets["shop"].ServiceAccount {
 			t.Fatalf("upgraded config: %+v %v", cfg, err)
@@ -88,13 +86,13 @@ func TestDashboardChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.SaveTab(ctx, id, "shop", "Orders", config.TabRule{Ops: []string{"read"}, Hidden: []string{"cost"}}); err != nil {
+	if err := db.SaveTab(ctx, id, "shop", "Orders", TabRule{Ops: []string{"read"}, Hidden: []string{"cost"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SaveTab(ctx, id, "shop", "Nope", config.TabRule{}); err == nil || !strings.Contains(err.Error(), "unknown tab") {
+	if err := db.SaveTab(ctx, id, "shop", "Nope", TabRule{}); err == nil || !strings.Contains(err.Error(), "unknown tab") {
 		t.Errorf("save unknown tab: %v", err)
 	}
-	if err := db.CreateKey(ctx, id, config.Key{Hash: config.HashKey("k"), Name: "bad", Tabs: []string{"shop/Nope"}}); err == nil {
+	if err := db.CreateKey(ctx, id, Key{Hash: HashKey("k"), Name: "bad", Tabs: []string{"shop/Nope"}}); err == nil {
 		t.Error("key for an unknown tab was accepted")
 	}
 	sheets, cfg, err := db.Spreadsheets(ctx, id)

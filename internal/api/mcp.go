@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/amalgamated-tools/sheetserve/internal/config"
+	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -20,10 +20,10 @@ import (
 // one set of tools per tab the key can reach, with column names from the header row.
 func (a *API) mcpHandler() http.Handler {
 	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return a.mcpServer(r.Context(), a.cfg.KeyFor(bearer(r)))
+		return a.mcpServer(r.Context(), a.settings.KeyFor(bearer(r)))
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.KeyFor(bearer(r)) == nil {
+		if a.settings.KeyFor(bearer(r)) == nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
 			return
 		}
@@ -33,7 +33,7 @@ func (a *API) mcpHandler() http.Handler {
 
 // TODO: the server is rebuilt per request (stateless mode), reading each tab's header from
 // the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
-func (a *API) mcpServer(ctx context.Context, key *config.Key) *mcp.Server {
+func (a *API) mcpServer(ctx context.Context, key *db.Key) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: Version}, nil)
 	a.eachTab(ctx, key, func(name, sheet, tab, rowKey string, ops, cols []string) {
 		a.addTabTools(srv, key, name, sheet, tab, rowKey, ops, cols)
@@ -45,11 +45,11 @@ func (a *API) mcpServer(ctx context.Context, key *config.Key) *mcp.Server {
 // those tabs, its key column ("" when it has none), the ops it may perform and its distinct
 // visible columns (including the key). A tab without a key column offers only read, which then
 // means listing. Tabs whose header can't be read are skipped.
-func (a *API) eachTab(ctx context.Context, key *config.Key, fn func(name, sheet, tab, rowKey string, ops, cols []string)) {
+func (a *API) eachTab(ctx context.Context, key *db.Key, fn func(name, sheet, tab, rowKey string, ops, cols []string)) {
 	used := map[string]bool{}
-	for _, sheet := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets)) {
-		for _, tab := range slices.Sorted(maps.Keys(a.cfg.Spreadsheets[sheet].Tabs)) {
-			ops := slices.DeleteFunc(slices.Clone(config.AllOps), func(op string) bool { return !a.cfg.Can(key, sheet, tab, op) })
+	for _, sheet := range slices.Sorted(maps.Keys(a.settings.Spreadsheets)) {
+		for _, tab := range slices.Sorted(maps.Keys(a.settings.Spreadsheets[sheet].Tabs)) {
+			ops := slices.DeleteFunc(slices.Clone(db.AllOps), func(op string) bool { return !a.settings.Can(key, sheet, tab, op) })
 			if len(ops) == 0 {
 				continue
 			}
@@ -120,7 +120,7 @@ func createNote(rowKey string) string {
 	return rowKey + " is required and must be unique."
 }
 
-func (a *API) addTabTools(srv *mcp.Server, key *config.Key, name, sheet, tab, rowKey string, ops, cols []string) {
+func (a *API) addTabTools(srv *mcp.Server, key *db.Key, name, sheet, tab, rowKey string, ops, cols []string) {
 	where := sheet + "/" + tab
 	createFields, updateFields := writeFields(rowKey, cols)
 	idSchema := object(map[string]any{"id": map[string]any{"type": "string", "description": "the row's " + rowKey}}, "id")
@@ -187,7 +187,7 @@ func object(props map[string]any, required ...string) map[string]any {
 	return s
 }
 
-func addTool[In any](srv *mcp.Server, key *config.Key, name, desc string, schema map[string]any, fn func(context.Context, In) (any, error)) {
+func addTool[In any](srv *mcp.Server, key *db.Key, name, desc string, schema map[string]any, fn func(context.Context, In) (any, error)) {
 	srv.AddTool(&mcp.Tool{Name: name, Description: desc, InputSchema: schema},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var in In
