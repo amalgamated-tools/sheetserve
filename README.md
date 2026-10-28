@@ -12,6 +12,8 @@ The server keeps them in SQLite.
 - When `SHEETSERVE_CACHE_TTL` is set, a per-tab cache stores reads. Any write to a tab clears that tab's cache.
 - Every request is logged as JSON, with the key name and the reason for any refusal.
 
+![The Spreadsheets page: each tab of the shop spreadsheet has its allowed ops, hidden columns and key column](docs/images/spreadsheets.jpg)
+
 ## Setup
 
 Google Cloud setup:
@@ -46,6 +48,8 @@ mise run run           # or: go run ./cmd/server, with the variables exported
 Sign in, add a spreadsheet from your Drive, and turn on the ops you want for each tab. New tabs start with no ops enabled.
 Then create an API key on the API keys page. Row 1 of each tab is its header row.
 
+![The API keys page: a new storefront key scoped to shop/Products and shop/Orders with read and create](docs/images/api-keys.jpg)
+
 Each tab has a key column, which identifies a row in `GET`, `PATCH` and `DELETE /v1/<sheet>/<tab>/<key>`. It is `id` unless you
 name another column, such as `email` or `sku`, on the tab's row in the dashboard.
 
@@ -63,6 +67,8 @@ Customers: name, email
 
 The server creates the spreadsheet in your Drive with your Google account, writes and freezes each header row,
 and puts an `id` column first unless you list one. `drive.file` covers files the app creates, so you don't need to pick it.
+
+![The Create a spreadsheet form, with three tabs and their columns](docs/images/create-spreadsheet.jpg)
 
 A key acts through the Google account of the user who made it.
 
