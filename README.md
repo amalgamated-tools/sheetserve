@@ -10,7 +10,8 @@ The server keeps them in SQLite.
 - `/mcp` serves an MCP endpoint. Each key gets tools for the tabs it can reach, built from the header row.
 - `/openapi.json` serves an OpenAPI 3.1 spec. It lists only the tabs, ops and columns the caller's key can use.
 - When `SHEETSERVE_CACHE_TTL` is set, a per-tab cache stores reads. Any write to a tab clears that tab's cache.
-- Every request is logged as JSON, with the key name and the reason for any refusal.
+- Every request is logged as JSON, with its status, duration, request ID and trace ID. API requests also log the key name and the reason for any refusal.
+- Sign-ins and dashboard changes, such as a new key or a tab rule, are logged as `audit` records that name the user.
 
 ![The Spreadsheets page: each tab of the shop spreadsheet has its allowed ops, hidden columns and key column](docs/images/spreadsheets.jpg)
 
@@ -40,6 +41,7 @@ Environment variables:
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
 | `PORT` | Optional. Listen port. Defaults to `8085`. |
 | `OTEL_*` | Optional. The standard OpenTelemetry variables, such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. Traces, metrics and logs export over OTLP. Set `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` to `none` to turn one off. |
+| `LOG_LEVEL` | Optional. `debug`, `info`, `warn` or `error`. Defaults to `info`. `debug` adds a line for each Google Sheets call and each cache hit, miss and invalidation. |
 
 ```sh
 cp .env.example .env   # fill it in

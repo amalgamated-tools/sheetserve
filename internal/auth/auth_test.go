@@ -15,10 +15,12 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/testutil/oteltest"
 )
 
 // The OAuth callback checks state, stores the refresh token encrypted, and starts a session.
 func TestSignIn(t *testing.T) {
+	logs := oteltest.CaptureLogs(t)
 	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +109,9 @@ func TestSignIn(t *testing.T) {
 	}
 	if len(signedIn) != 1 || signedIn[0] != id {
 		t.Errorf("OnSignIn calls: %v, want [%d]", signedIn, id)
+	}
+	if recs := logs("audit"); len(recs) != 1 || recs[0]["action"] != "auth.sign_in" || recs[0]["user_email"] != "carol@example.com" || recs[0]["user_id"] != float64(id) {
+		t.Errorf("sign-in audit: %v", recs)
 	}
 
 	resp, err := c.Post(srv.URL+"/logout", "", nil)

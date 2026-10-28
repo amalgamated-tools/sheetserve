@@ -27,6 +27,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
+	"github.com/amalgamated-tools/sheetserve/internal/testutil/oteltest"
 )
 
 type fakeStore struct {
@@ -529,5 +530,58 @@ func TestRoles(t *testing.T) {
 	}
 	if s, _ := get(t, carol, srv.URL+"/sheets", ""); s != 303 {
 		t.Errorf("removed user's session: %d", s)
+	}
+}
+
+// Each dashboard change logs one audit record naming who made it; a refused change logs none.
+func TestAuditLog(t *testing.T) {
+	logs := oteltest.CaptureLogs(t)
+	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{}})
+	alice := signInAs(t, dash, srv, "alice") // the first user is the admin
+	bob := signInAs(t, dash, srv, "bob")
+	users, err := dash.DB.Users(context.Background())
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users: %+v %v", users, err)
+	}
+	bobID := strconv.FormatInt(users[1].ID, 10)
+
+	for _, step := range []struct {
+		path string
+		form url.Values
+	}{
+		{"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}},
+		{"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}, "hidden": {"item"}}},
+		{"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}, "ops": {"read"}}},
+		{"/app/keys/delete", url.Values{"name": {"web"}}},
+		{"/app/sheets/delete", url.Values{"name": {"shop"}}},
+		{"/app/users/role", url.Values{"id": {bobID}, "role": {"admin"}}},
+		{"/app/users/delete", url.Values{"id": {bobID}}},
+	} {
+		if s, body := post(t, alice, srv.URL+step.path, step.form); s >= 400 {
+			t.Fatalf("%s: %d %s", step.path, s, body)
+		}
+	}
+	if s, _ := post(t, bob, srv.URL+"/app/keys", url.Values{"name": {"k"}, "tabs": {"*"}}); s == 200 {
+		t.Errorf("removed user made a key: %d", s)
+	}
+
+	var actions []string
+	for _, rec := range logs("audit") {
+		if rec["user_email"] != "alice@example.com" {
+			t.Errorf("audit by %v, want alice: %v", rec["user_email"], rec)
+		}
+		actions = append(actions, rec["action"].(string))
+	}
+	want := []string{"sheet.create", "tab.save", "key.create", "key.delete", "sheet.delete", "user.set_role", "user.delete"}
+	if !slices.Equal(actions, want) {
+		t.Errorf("audit actions: %v, want %v", actions, want)
+	}
+	if recs := logs("audit"); len(recs) > 2 {
+		if tab := recs[1]; tab["sheet"] != "shop" || tab["tab"] != "Orders" || tab["ops"] != "read,create" || tab["hidden"] != "item" || tab["key_column"] != "id" {
+			t.Errorf("tab.save record: %v", tab)
+		}
+		if key := recs[2]; key["key_name"] != "web" || key["tabs"] != "shop/Orders" || key["ops"] != "read" {
+			t.Errorf("key.create record: %v", key)
+		}
 	}
 }

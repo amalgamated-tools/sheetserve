@@ -14,6 +14,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 )
 
 // Google handles sign-in with Google, the session cookie, and each user's Google credentials.
@@ -78,7 +79,7 @@ func (g *Google) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in failed: "+e, http.StatusBadRequest)
 		return
 	}
-	userID, err := g.signIn(r.Context(), r.FormValue("code"), verifier.Value)
+	userID, email, err := g.signIn(r.Context(), r.FormValue("code"), verifier.Value)
 	if err != nil {
 		slog.Error("sign-in", "err", err)
 		http.Error(w, "sign-in failed", http.StatusBadGateway)
@@ -91,26 +92,29 @@ func (g *Google) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.OnSignIn(userID)
+	slog.LogAttrs(r.Context(), slog.LevelInfo, "audit", slog.String(otelkeys.Action, "auth.sign_in"),
+		slog.Int64(otelkeys.UserID, userID), slog.String(otelkeys.UserEmail, email))
 	http.SetCookie(w, g.cookie("session", sess, int(db.SessionTTL.Seconds())))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // signIn exchanges the code, identifies the Google account, and stores its refresh token.
-func (g *Google) signIn(ctx context.Context, code, verifier string) (int64, error) {
+func (g *Google) signIn(ctx context.Context, code, verifier string) (userID int64, email string, err error) {
 	tok, err := g.OAuth.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	resp, err := g.OAuth.Client(ctx, tok).Get(g.UserinfoURL)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var info struct{ Sub, Email string }
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || resp.StatusCode != http.StatusOK || info.Sub == "" {
-		return 0, fmt.Errorf("userinfo: status %d, err %v", resp.StatusCode, err)
+		return 0, "", fmt.Errorf("userinfo: status %d, err %v", resp.StatusCode, err)
 	}
-	return g.DB.UpsertUser(ctx, info.Sub, info.Email, tok.RefreshToken)
+	userID, err = g.DB.UpsertUser(ctx, info.Sub, info.Email, tok.RefreshToken)
+	return userID, info.Email, err
 }
 
 // CurrentUser returns the signed-in user, or ok=false.
