@@ -132,7 +132,7 @@ func TestRoles(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
-	var ids []int64
+	ids := make([]int64, 0, 3)
 	for _, sub := range []string{"a", "b", "a"} { // a signs in twice
 		id, err := db.UpsertUser(ctx, sub, sub+"@example.com", "")
 		if err != nil {

@@ -32,8 +32,12 @@ func (f *fakeStore) Append(_ context.Context, id, tab string, row []any) error {
 }
 
 func (f *fakeStore) SetCells(_ context.Context, id, tab string, row int, cells map[int]any) error {
+	rows := f.tabs[id+"/"+tab]
+	if row < 1 || row > len(rows) {
+		return fmt.Errorf("row %d out of range", row)
+	}
 	for c, v := range cells {
-		f.tabs[id+"/"+tab][row-1][c] = v
+		rows[row-1][c] = v
 	}
 	return nil
 }

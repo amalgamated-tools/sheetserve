@@ -138,7 +138,7 @@ printf 'all %d otelkeys constants are in use\n' "$(printf '%s\n' "$declared" | w
 
 [tasks.nilaway]
 description = "Run nilaway"
-run = "go tool nilaway -exclude-file-docstrings='Code generated' ./..."
+run = "go tool nilaway -include-pkgs=github.com/amalgamated-tools/sheetserve -exclude-file-docstrings='Code generated' ./..."
 
 [tasks.hardfmt]
 description = "Run hardfmt"
