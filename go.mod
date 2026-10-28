@@ -1,6 +1,6 @@
 module github.com/amalgamated-tools/sheetserve
 
-go 1.27.0
+go 1.27.3
 
 require (
 	charm.land/log/v2 v2.0.1
