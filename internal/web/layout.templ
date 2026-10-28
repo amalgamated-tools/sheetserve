@@ -1,0 +1,95 @@
+package web
+
+// document is the HTML around every page. title names the page in the browser tab.
+templ document(title string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+			if title != "" {
+				<title>{ title } · sheetserve</title>
+			} else {
+				<title>sheetserve</title>
+			}
+			<link rel="stylesheet" href="/static/app.css"/>
+		</head>
+		<body>
+			{ children... }
+		</body>
+	</html>
+}
+
+templ logo() {
+	<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"></rect><path d="M3 9h18M3 15h18M9 3v18"></path></svg>
+}
+
+// layout wraps a signed-in page: the top bar with the page nav, then any flash messages, the
+// page, and the behavior every page shares. scripts are the page's own, loaded after that.
+templ layout(s shell, scripts ...string) {
+	@document(s.Title) {
+		<div class="topbar">
+			<div class="inner">
+				<a class="brand" href="/sheets">
+					@logo()
+					sheetserve
+				</a>
+				<nav class="nav" aria-label="Pages">
+					<a
+						href="/sheets"
+						if s.Section == sheetsPage {
+							aria-current="page"
+						}
+					>Spreadsheets <span class="badge">{ s.SheetCount }</span></a>
+					<a
+						href="/keys"
+						if s.Section == keysPage {
+							aria-current="page"
+						}
+					>API keys <span class="badge">{ s.KeyCount }</span></a>
+					if s.Admin {
+						<a
+							href="/users"
+							if s.Section == usersPage {
+								aria-current="page"
+							}
+						>Users</a>
+					}
+				</nav>
+				<form class="who" method="post" action="/logout"><span>{ s.Email }</span> <button class="small">Sign out</button></form>
+			</div>
+		</div>
+		<main>
+			<div id="flash">
+				if s.Error != "" {
+					<p class="flash error" role="alert">{ s.Error }</p>
+				}
+				if s.NewKey != "" {
+					<div class="flash key" role="status">
+						<strong>New key created.</strong>
+						<div class="row"><code id="new-key">{ s.NewKey }</code> <button class="small" type="button" data-copy="#new-key">Copy</button></div>
+						<span class="hint">Copy it now. It is not stored and won't be shown again.</span>
+					</div>
+				}
+			</div>
+			{ children... }
+		</main>
+		<script src="/static/app.js"></script>
+		for _, src := range scripts {
+			<script src={ src }></script>
+		}
+	}
+}
+
+// card is a centered card on its own, for pages without the top bar.
+templ card() {
+	<div class="login">
+		<div class="card">
+			<span class="brand" style="justify-content:center">
+				@logo()
+			</span>
+			{ children... }
+		</div>
+	</div>
+}

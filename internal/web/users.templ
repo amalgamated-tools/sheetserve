@@ -1,0 +1,56 @@
+package web
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/amalgamated-tools/sheetserve/internal/rbac"
+)
+
+templ usersView(s shell, users []userView) {
+	@layout(s) {
+		<div class="page-head">
+			<h1>Users</h1>
+			<p>Everyone who has signed in. New users wait as pending until you approve them. Pending users can't change anything, and their keys get 403.</p>
+		</div>
+		<section class="card">
+			<div class="table-wrap">
+				<table>
+					<tr><th>Email</th><th>Role</th><th></th></tr>
+					for _, u := range users {
+						@userRow(u, fmt.Sprintf("user-%d", u.ID))
+					}
+				</table>
+			</div>
+		</section>
+	}
+}
+
+// userRow changes or removes one user. Its role select belongs to the form named f.
+templ userRow(u userView, f string) {
+	<tr>
+		<td>
+			<strong>{ u.Email }</strong>
+			if u.You {
+				<span class="badge">you</span>
+			}
+		</td>
+		<td>
+			<select form={ f } name="role" aria-label={ "Role for " + u.Email }>
+				for _, role := range rbac.Roles {
+					<option value={ string(role) } selected?={ role == u.Role }>{ string(role) }</option>
+				}
+			</select>
+		</td>
+		<td class="right">
+			<form id={ f } class="inline" method="post" action="/app/users/role">
+				<input type="hidden" name="id" value={ strconv.FormatInt(u.ID, 10) }/>
+				<button class="small">Save</button>
+			</form>
+			<form class="inline" method="post" action="/app/users/delete" data-confirm={ "Remove " + u.Email + "? Their spreadsheets and keys are deleted, and their keys stop working." }>
+				<input type="hidden" name="id" value={ strconv.FormatInt(u.ID, 10) }/>
+				<button class="danger small">Remove</button>
+			</form>
+		</td>
+	</tr>
+}

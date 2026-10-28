@@ -15,10 +15,15 @@ sources = [
   "go.sum",
   "cmd/**/*.go",
   "internal/**/*.go",
-  "internal/**/*.html",
+  "internal/**/*.templ",
+  "internal/web/static/**",
 ]
 outputs = ["sheetserve"]
 run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sheetserve ./cmd/server"
+
+[tasks.generate]
+description = "Generate Go code from the dashboard's templ templates"
+run = "go generate ./internal/web"
 
 [tasks.run]
 description = "Run the server"

@@ -1,0 +1,81 @@
+package web
+
+import "github.com/amalgamated-tools/sheetserve/internal/db"
+
+// keysView lists the user's keys and makes new ones. tabSpecs are the scopes a key can have.
+templ keysView(s shell, keys []keyView, tabSpecs []string) {
+	@layout(s) {
+		<div class="page-head">
+			<h1>API keys</h1>
+			<p>A key reaches the tabs you scope it to, with at most the ops each tab allows. Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
+		</div>
+		if len(keys) > 0 {
+			<section class="card">
+				<div class="table-wrap">
+					<table>
+						<tr><th>Name</th><th>Tabs</th><th>Ops</th><th></th></tr>
+						for _, k := range keys {
+							<tr>
+								<td><strong>{ k.Name }</strong></td>
+								<td><code>{ k.Tabs }</code></td>
+								<td>{ k.Ops }</td>
+								<td class="right">
+									<form class="inline" method="post" action="/app/keys/delete" data-confirm={ "Revoke " + k.Name + "? Clients using it will get 401." }>
+										<input type="hidden" name="name" value={ k.Name }/>
+										<button class="danger small">Revoke</button>
+									</form>
+								</td>
+							</tr>
+						}
+					</table>
+				</div>
+			</section>
+		} else {
+			<div class="empty">No keys yet.</div>
+		}
+		<h2>New key</h2>
+		<section class="card">
+			if s.SheetCount > 0 {
+				<form method="post" action="/app/keys">
+					<label class="field"><span>Name</span><input name="name" required placeholder="e.g. website, agent"/></label>
+					<fieldset>
+						<legend>Tabs</legend>
+						<div class="chips">
+							for _, spec := range tabSpecs {
+								<label class="chip">
+									<input type="checkbox" name="tabs" value={ spec }/>
+									if spec == "*" {
+										everything
+									} else {
+										{ spec }
+									}
+								</label>
+							}
+						</div>
+					</fieldset>
+					<fieldset>
+						<legend>Limit to ops <span class="hint">(optional; otherwise whatever each tab allows)</span></legend>
+						<div class="chips">
+							for _, op := range db.AllOps {
+								<label class="chip"><input type="checkbox" name="ops" value={ op }/> { op }</label>
+							}
+						</div>
+					</fieldset>
+					<div class="actions"><button class="primary">Create key</button></div>
+				</form>
+			} else {
+				<p class="muted"><a href="/sheets#add-sheet">Add a spreadsheet</a> first, then create a key for its tabs.</p>
+			}
+		</section>
+		<h2>Using a key</h2>
+		<section class="card">
+			<div class="table-wrap">
+				<table>
+					<tr><td>REST</td><td><code><span class="origin"></span>/v1/&lt;sheet&gt;/&lt;tab&gt;</code></td></tr>
+					<tr><td>MCP</td><td><code id="mcp-url"><span class="origin"></span>/mcp</code> <button class="small" type="button" data-copy="#mcp-url">Copy</button></td></tr>
+					<tr><td>OpenAPI</td><td><code><span class="origin"></span>/openapi.json</code> <span class="hint">covers the tabs the key can reach</span></td></tr>
+				</table>
+			</div>
+		</section>
+	}
+}

@@ -105,6 +105,7 @@ func TestRouteTable(t *testing.T) {
 		"GET /openapi.json",
 		"GET /sheets",
 		"GET /sheets/new",
+		"GET /static/*",
 		"GET /users",
 		"GET /v1/{sheet}/{tab}",
 		"GET /v1/{sheet}/{tab}/{id}",

@@ -1,0 +1,27 @@
+package web
+
+templ loginView() {
+	@document("") {
+		@card() {
+			<h1>sheetserve</h1>
+			<p class="muted">Serve your Google Sheets as a REST API and an MCP endpoint.</p>
+			<ul>
+				<li>Pick spreadsheets from your Drive</li>
+				<li>Choose which tabs allow reads and writes</li>
+				<li>Hand out scoped API keys</li>
+			</ul>
+			<a class="button primary" href="/login">Sign in with Google</a>
+		}
+	}
+}
+
+// pendingView is shown instead of any page to a user who is not approved yet.
+templ pendingView(email string) {
+	@document("Waiting for approval") {
+		@card() {
+			<h1>Waiting for approval</h1>
+			<p class="muted">You're signed in as { email }. An admin of this server needs to approve you before you can add spreadsheets or make keys.</p>
+			<form method="post" action="/logout"><button>Sign out</button></form>
+		}
+	}
+}
