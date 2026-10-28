@@ -74,7 +74,7 @@ func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) 
 		fail(http.StatusBadRequest, "name must be letters, digits, - or _")
 		return
 	}
-	tabs, err := parseSchema(form.Schema)
+	tabs, keys, err := parseSchema(form.Schema)
 	if err != nil {
 		fail(http.StatusBadRequest, err.Error())
 		return
@@ -100,7 +100,7 @@ func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) 
 	for i, t := range tabs {
 		names[i] = t.Name
 	}
-	d.saveSheet(w, r, u, db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names})
+	d.saveSheet(w, r, u, db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Keys: keys})
 }
 
 // create makes a spreadsheet with the user's own credentials, so it lands in their Drive.
@@ -116,10 +116,10 @@ func (d *Dashboard) create(ctx context.Context, userID int64, title string, tabs
 	return c.Create(ctx, title, tabs)
 }
 
-// parseSchema reads one tab per line, as "Tab: column, column". Each tab gets an id column first
-// unless it lists one, since the API finds rows by id.
-func parseSchema(s string) ([]store.Tab, error) {
-	var tabs []store.Tab
+// parseSchema reads one tab per line, as "Tab: column, column". A column marked "*column" is the
+// tab's key column, returned in keys by tab name. A tab without one gets an id column first unless
+// it lists one, since the API finds its rows by id.
+func parseSchema(s string) (tabs []store.Tab, keys map[string]string, err error) {
 	for line := range strings.Lines(s) {
 		name, cols, _ := strings.Cut(line, ":")
 		name = strings.TrimSpace(name)
@@ -128,31 +128,45 @@ func parseSchema(s string) ([]store.Tab, error) {
 		}
 		switch {
 		case name == "":
-			return nil, fmt.Errorf("tab name missing in %q", strings.TrimSpace(line))
+			return nil, nil, fmt.Errorf("tab name missing in %q", strings.TrimSpace(line))
 		case strings.Contains(name, "/"):
-			return nil, fmt.Errorf("tab %q: name must not contain /", name)
+			return nil, nil, fmt.Errorf("tab %q: name must not contain /", name)
 		case slices.ContainsFunc(tabs, func(t store.Tab) bool { return strings.EqualFold(t.Name, name) }):
-			return nil, fmt.Errorf("tab %q is listed twice", name)
+			return nil, nil, fmt.Errorf("tab %q is listed twice", name)
 		}
-		t := store.Tab{Name: name}
+		t, key := store.Tab{Name: name}, ""
 		for c := range strings.SplitSeq(cols, ",") {
 			if c = strings.TrimSpace(c); c == "" {
 				continue
 			}
+			if k, ok := strings.CutPrefix(c, "*"); ok {
+				if c = strings.TrimSpace(k); c == "" {
+					return nil, nil, fmt.Errorf("tab %q: * needs a column name after it", name)
+				}
+				if key != "" {
+					return nil, nil, fmt.Errorf("tab %q: only one column can be marked * as the key", name)
+				}
+				key = c
+			}
 			if slices.Contains(t.Columns, c) {
-				return nil, fmt.Errorf("tab %q: column %q is listed twice", name, c)
+				return nil, nil, fmt.Errorf("tab %q: column %q is listed twice", name, c)
 			}
 			t.Columns = append(t.Columns, c)
 		}
-		if !slices.Contains(t.Columns, "id") {
+		if key != "" {
+			if keys == nil {
+				keys = map[string]string{}
+			}
+			keys[name] = key
+		} else if !slices.Contains(t.Columns, "id") {
 			t.Columns = slices.Insert(t.Columns, 0, "id")
 		}
 		tabs = append(tabs, t)
 	}
 	if len(tabs) == 0 {
-		return nil, errors.New("list at least one tab, such as \"Orders: item, qty\"")
+		return nil, nil, errors.New("list at least one tab, such as \"Orders: item, qty\"")
 	}
-	return tabs, nil
+	return tabs, keys, nil
 }
 
 func (d *Dashboard) deleteSheet(w http.ResponseWriter, r *http.Request, u user) {

@@ -219,6 +219,7 @@ type Spreadsheet struct {
 	Name, Title string
 	GoogleID    string
 	Tabs        []string
+	Keys        map[string]string // key column by tab; a tab not listed uses "id"
 }
 
 // UserSettings reads userID's spreadsheets and keys into validated Settings.
@@ -280,8 +281,8 @@ func (d *DB) AddSpreadsheet(ctx context.Context, userID int64, s Spreadsheet) er
 			return err
 		}
 		for _, tab := range s.Tabs {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO tabs (user_id, sheet, tab, ops, hidden) VALUES (?, ?, ?, '[]', '[]')`,
-				userID, s.Name, tab); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO tabs (user_id, sheet, tab, ops, hidden, key_column) VALUES (?, ?, ?, '[]', '[]', ?)`,
+				userID, s.Name, tab, cmp.Or(s.Keys[tab], "id")); err != nil {
 				return err
 			}
 		}

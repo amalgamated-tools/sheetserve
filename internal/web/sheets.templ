@@ -112,7 +112,7 @@ templ newSheetView(s shell, form newSheetForm) {
 				<label class="field">
 					<span>Tabs and columns</span>
 					<textarea name="schema" rows="6" required placeholder="Orders: item, qty, price&#10;Customers: name, email">{ form.Schema }</textarea>
-					<span class="hint">One tab per line, as <code>Tab: column, column</code>. Each tab gets an <code>id</code> column first unless you list one.</span>
+					<span class="hint">One tab per line, as <code>Tab: column, column</code>. Mark a key column with <code>*</code>, as in <code>Products: *sku, name</code>. A tab without one gets an <code>id</code> column first unless you list one.</span>
 				</label>
 				<div class="actions"><button class="primary">Create spreadsheet</button> <a class="button" href="/sheets">Cancel</a></div>
 			</form>
