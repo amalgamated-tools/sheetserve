@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -28,6 +29,13 @@ type Google struct {
 func New(d *db.DB, oauth *oauth2.Config) *Google {
 	return &Google{DB: d, OAuth: oauth, UserinfoURL: "https://openidconnect.googleapis.com/v1/userinfo",
 		OnSignIn: func(int64) {}}
+}
+
+// Routes adds sign-in, its callback from Google, and sign-out to r.
+func (g *Google) Routes(r chi.Router) {
+	r.Get("/login", g.Login)
+	r.Get("/auth/callback", g.Callback)
+	r.With(http.NewCrossOriginProtection().Handler).Post("/logout", g.Logout)
 }
 
 // TokenSource returns userID's Google credentials, from the refresh token they signed in with.

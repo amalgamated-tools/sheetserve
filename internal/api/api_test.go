@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"google.golang.org/api/googleapi"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -31,8 +32,12 @@ func (f *fakeStore) Append(_ context.Context, id, tab string, row []any) error {
 }
 
 func (f *fakeStore) SetCells(_ context.Context, id, tab string, row int, cells map[int]any) error {
+	rows := f.tabs[id+"/"+tab]
+	if row < 1 || row > len(rows) {
+		return fmt.Errorf("row %d out of range", row)
+	}
 	for c, v := range cells {
-		f.tabs[id+"/"+tab][row-1][c] = v
+		rows[row-1][c] = v
 	}
 	return nil
 }
@@ -519,5 +524,38 @@ func TestKeyColumns(t *testing.T) {
 	}
 	if _, ok := spec.Paths["/v1/shop/Log/{id}"]; ok {
 		t.Error("keyless tab has an item path")
+	}
+}
+
+// Tab names reach handlers decoded, whether or not the request path needed escaping.
+func TestEscapedTabNames(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+			"Q1/Q2": {Ops: []string{"read"}}, "100%": {Ops: []string{"read"}}, "A B": {Ops: []string{"read"}},
+		}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{
+		"SS/Q1/Q2": {{"id"}, {"r1"}}, "SS/100%": {{"id"}, {"r2"}}, "SS/A B": {{"id"}, {"r3"}},
+	}}
+	h := New(cfg, service.New(cfg, store, 0)).Mux()
+	for path, want := range map[string]string{
+		"/v1/shop/Q1%2FQ2": "r1", "/v1/shop/100%25": "r2", "/v1/shop/A%20B": "r3", "/v1/shop/A%20B/r3": "r3",
+	} {
+		if status, body := call(t, h, "GET", path, "admin-key", ""); status != http.StatusOK || !strings.Contains(body, want) {
+			t.Errorf("GET %s: %d %s", path, status, body)
+		}
+	}
+}
+
+// Routes mounted without middleware that supplies an API fail closed instead of panicking.
+func TestRoutesWithoutAPI(t *testing.T) {
+	r := chi.NewRouter()
+	Routes(r)
+	if status, body := call(t, r, "GET", "/v1/shop/Orders", "admin-key", ""); status != http.StatusInternalServerError {
+		t.Errorf("got %d %s", status, body)
 	}
 }

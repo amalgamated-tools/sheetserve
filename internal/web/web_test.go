@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -14,9 +15,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 
+	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/auth"
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -53,8 +56,12 @@ func (f *fakeStore) Append(_ context.Context, id, tab string, row []any) error {
 }
 
 func (f *fakeStore) SetCells(_ context.Context, id, tab string, row int, cells map[int]any) error {
+	rows := f.tabs[id+"/"+tab]
+	if row < 1 || row > len(rows) {
+		return fmt.Errorf("row %d out of range", row)
+	}
 	for c, v := range cells {
-		f.tabs[id+"/"+tab][row-1][c] = v
+		rows[row-1][c] = v
 	}
 	return nil
 }
@@ -97,10 +104,13 @@ func newTestDashboard(t *testing.T, sheetStore store.Store) (*Dashboard, *httpte
 		NewStore: func(int64) (store.Store, error) { return sheetStore, nil }}
 	dash := &Dashboard{DB: d, Auth: auth.New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret"}), Tenants: tenants}
 	// The API routes too, so tests can use the keys they create.
-	mux := http.NewServeMux()
-	mux.Handle("/v1/", tenants)
-	mux.Handle("GET /openapi.json", tenants)
-	mux.Handle("/", dash.Handler())
+	mux := chi.NewRouter()
+	mux.Group(func(r chi.Router) {
+		r.Use(tenants.Middleware)
+		api.Routes(r)
+	})
+	dash.Routes(mux)
+	dash.Auth.Routes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return dash, srv
@@ -153,16 +163,25 @@ func send(t *testing.T, c *http.Client, req *http.Request) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
+func newRequest(t *testing.T, method, u string, body io.Reader) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, u, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
 func post(t *testing.T, c *http.Client, u string, form url.Values) (int, string) {
 	t.Helper()
-	req, _ := http.NewRequest("POST", u, strings.NewReader(form.Encode()))
+	req := newRequest(t, "POST", u, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	return send(t, c, req)
 }
 
 func get(t *testing.T, c *http.Client, u, key string) (int, string) {
 	t.Helper()
-	req, _ := http.NewRequest("GET", u, nil)
+	req := newRequest(t, "GET", u, nil)
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -234,7 +253,7 @@ func TestDashboardAndAPI(t *testing.T) {
 	if s, _ := post(t, browser(t), srv.URL+"/app/keys", url.Values{"name": {"x"}, "tabs": {"*"}}); s != 303 {
 		t.Errorf("signed-out post: %d", s)
 	}
-	req, _ := http.NewRequest("POST", srv.URL+"/app/keys", strings.NewReader("name=x&tabs=*"))
+	req := newRequest(t, "POST", srv.URL+"/app/keys", strings.NewReader("name=x&tabs=*"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	if s, _ := send(t, alice, req); s != 403 {
@@ -249,7 +268,7 @@ func TestDashboardPages(t *testing.T) {
 	alice := signInAs(t, dash, srv, "alice")
 	location := func(method, path string, form url.Values) (int, string) {
 		t.Helper()
-		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(form.Encode()))
+		req := newRequest(t, method, srv.URL+path, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		resp, err := alice.Do(req)
 		if err != nil {
@@ -332,10 +351,10 @@ func TestCreateSheet(t *testing.T) {
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 303 {
 		t.Fatalf("create sheet: %d %s", s, body)
 	}
-	if got := fs.tabs["new-shop/Orders"]; !slices.Equal(got[0], []any{"id", "item", "qty"}) {
+	if got := fs.tabs["new-shop/Orders"]; len(got) == 0 || !slices.Equal(got[0], []any{"id", "item", "qty"}) {
 		t.Errorf("Orders header: %v", got)
 	}
-	if got := fs.tabs["new-shop/Notes"]; !slices.Equal(got[0], []any{"id"}) {
+	if got := fs.tabs["new-shop/Notes"]; len(got) == 0 || !slices.Equal(got[0], []any{"id"}) {
 		t.Errorf("Notes header: %v", got)
 	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}); s != 303 {
@@ -343,7 +362,7 @@ func TestCreateSheet(t *testing.T) {
 	}
 	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}})
 	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
-	req, _ := http.NewRequest("POST", srv.URL+"/v1/shop/Orders", strings.NewReader(`{"item":"mug","qty":2}`))
+	req := newRequest(t, "POST", srv.URL+"/v1/shop/Orders", strings.NewReader(`{"item":"mug","qty":2}`))
 	req.Header.Set("Authorization", "Bearer "+key)
 	if s, body := send(t, browser(t), req); s != 201 {
 		t.Errorf("create row: %d %s", s, body)

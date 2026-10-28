@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 
@@ -118,10 +119,16 @@ type Dashboard struct {
 	AppID     string // Cloud project number, so picked files are granted to this app
 }
 
-// Handler serves the dashboard. It refuses cross-origin form posts.
-func (d *Dashboard) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+// Routes adds the dashboard's pages and forms to r. It refuses cross-origin form posts.
+func (d *Dashboard) Routes(r chi.Router) {
+	r.Group(func(mux chi.Router) {
+		mux.Use(http.NewCrossOriginProtection().Handler)
+		d.routes(mux)
+	})
+}
+
+func (d *Dashboard) routes(mux chi.Router) {
+	mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := d.Auth.CurrentUser(r); ok {
 			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
 			return
@@ -131,24 +138,22 @@ func (d *Dashboard) Handler() http.Handler {
 		}
 	})
 	for _, path := range []string{sheetsPage, newSheetPage, keysPage} {
-		mux.HandleFunc("GET "+path, d.signedIn(rbac.EditOwn, func(w http.ResponseWriter, r *http.Request, u user) {
+		mux.Get(path, d.signedIn(rbac.EditOwn, func(w http.ResponseWriter, r *http.Request, u user) {
 			d.render(w, r, u, page{Path: path}, http.StatusOK)
 		}))
 	}
-	mux.HandleFunc("GET "+usersPage, d.signedIn(rbac.ManageUsers, func(w http.ResponseWriter, r *http.Request, u user) {
+	mux.Get(usersPage, d.signedIn(rbac.ManageUsers, func(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, page{Path: usersPage}, http.StatusOK)
 	}))
-	mux.HandleFunc("POST /logout", d.Auth.Logout)
-	mux.HandleFunc("GET /app/token", d.signedIn(rbac.EditOwn, d.token))
-	mux.HandleFunc("POST /app/sheets", d.signedIn(rbac.EditOwn, d.addSheet))
-	mux.HandleFunc("POST /app/sheets/new", d.signedIn(rbac.EditOwn, d.createSheet))
-	mux.HandleFunc("POST /app/sheets/delete", d.signedIn(rbac.EditOwn, d.deleteSheet))
-	mux.HandleFunc("POST /app/tabs", d.signedIn(rbac.EditOwn, d.saveTab))
-	mux.HandleFunc("POST /app/keys", d.signedIn(rbac.EditOwn, d.createKey))
-	mux.HandleFunc("POST /app/keys/delete", d.signedIn(rbac.EditOwn, d.deleteKey))
-	mux.HandleFunc("POST /app/users/role", d.signedIn(rbac.ManageUsers, d.setRole))
-	mux.HandleFunc("POST /app/users/delete", d.signedIn(rbac.ManageUsers, d.deleteUser))
-	return http.NewCrossOriginProtection().Handler(mux)
+	mux.Get("/app/token", d.signedIn(rbac.EditOwn, d.token))
+	mux.Post("/app/sheets", d.signedIn(rbac.EditOwn, d.addSheet))
+	mux.Post("/app/sheets/new", d.signedIn(rbac.EditOwn, d.createSheet))
+	mux.Post("/app/sheets/delete", d.signedIn(rbac.EditOwn, d.deleteSheet))
+	mux.Post("/app/tabs", d.signedIn(rbac.EditOwn, d.saveTab))
+	mux.Post("/app/keys", d.signedIn(rbac.EditOwn, d.createKey))
+	mux.Post("/app/keys/delete", d.signedIn(rbac.EditOwn, d.deleteKey))
+	mux.Post("/app/users/role", d.signedIn(rbac.ManageUsers, d.setRole))
+	mux.Post("/app/users/delete", d.signedIn(rbac.ManageUsers, d.deleteUser))
 }
 
 // signedIn runs h for a signed-in user whose role grants perm. A user still waiting for approval
