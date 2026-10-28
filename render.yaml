@@ -24,3 +24,12 @@ services:
         sync: false
       - key: GOOGLE_PROJECT_NUMBER
         sync: false
+      # OpenTelemetry: traces, metrics and logs go to OpenObserve over OTLP/HTTP.
+      - key: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT # the SDK appends /v1/traces, /v1/metrics and /v1/logs
+        value: https://observe-sdhf.onrender.com/api/default
+      - key: OTEL_EXPORTER_OTLP_HEADERS # Authorization=Basic%20<token>,stream-name=sheetserve
+        sync: false
+      - key: OTEL_RESOURCE_ATTRIBUTES
+        value: deployment.environment.name=production
