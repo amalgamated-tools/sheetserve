@@ -15,6 +15,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/api"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
@@ -55,12 +56,17 @@ func (d *Dashboard) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, view{path: sheetsPage, err: "could not read that spreadsheet from Google" + googleDetail(err)}, http.StatusBadGateway)
 		return
 	}
-	d.saveSheet(w, r, u, db.Spreadsheet{Name: name, Title: title, GoogleID: gid, Tabs: tabs})
+	d.saveSheet(w, r, u, "sheet.add", db.Spreadsheet{Name: name, Title: title, GoogleID: gid, Tabs: tabs})
 }
 
-// saveSheet records a spreadsheet and its tabs, then shows it on the spreadsheets page.
-func (d *Dashboard) saveSheet(w http.ResponseWriter, r *http.Request, u user, s db.Spreadsheet) {
-	d.change(w, r, u, sheetsPage+"#sheet-"+s.Name, d.DB.AddSpreadsheet(r.Context(), u.id, s))
+// saveSheet records a spreadsheet and its tabs, logs action, then shows it on the spreadsheets page.
+func (d *Dashboard) saveSheet(w http.ResponseWriter, r *http.Request, u user, action string, s db.Spreadsheet) {
+	err := d.DB.AddSpreadsheet(r.Context(), u.id, s)
+	if err == nil {
+		audit(r.Context(), u, action, slog.String(otelkeys.Sheet, s.Name), slog.String(otelkeys.SpreadsheetID, s.GoogleID),
+			slog.String(otelkeys.Tabs, strings.Join(s.Tabs, ",")))
+	}
+	d.change(w, r, u, sheetsPage+"#sheet-"+s.Name, err)
 }
 
 // createSheet makes a blank spreadsheet in the user's Drive from a schema, then adds it like a
@@ -100,7 +106,7 @@ func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) 
 	for i, t := range tabs {
 		names[i] = t.Name
 	}
-	d.saveSheet(w, r, u, db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Keys: keys})
+	d.saveSheet(w, r, u, "sheet.create", db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Keys: keys})
 }
 
 // create makes a spreadsheet with the user's own credentials, so it lands in their Drive.
@@ -170,7 +176,12 @@ func parseSchema(s string) (tabs []store.Tab, keys map[string]string, err error)
 }
 
 func (d *Dashboard) deleteSheet(w http.ResponseWriter, r *http.Request, u user) {
-	d.change(w, r, u, sheetsPage, d.DB.DeleteSpreadsheet(r.Context(), u.id, r.FormValue("name")))
+	name := r.FormValue("name")
+	err := d.DB.DeleteSpreadsheet(r.Context(), u.id, name)
+	if err == nil {
+		audit(r.Context(), u, "sheet.delete", slog.String(otelkeys.Sheet, name))
+	}
+	d.change(w, r, u, sheetsPage, err)
 }
 
 // TODO: hidden columns are free text; read the header row to offer checkboxes if typos bite.
@@ -195,7 +206,13 @@ func (d *Dashboard) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 		}
 	}
 	rule := db.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
-	d.change(w, r, u, sheetsPage+"#sheet-"+sheet, d.DB.SaveTab(r.Context(), u.id, sheet, tab, rule))
+	err := d.DB.SaveTab(r.Context(), u.id, sheet, tab, rule)
+	if err == nil {
+		audit(r.Context(), u, "tab.save", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
+			slog.String(otelkeys.Ops, strings.Join(rule.Ops, ",")), slog.String(otelkeys.Hidden, strings.Join(hidden, ",")),
+			slog.String(otelkeys.KeyColumn, key))
+	}
+	d.change(w, r, u, sheetsPage+"#sheet-"+sheet, err)
 }
 
 // checkKey reads the tab's header from Google and returns why key can't be its key column, or "".

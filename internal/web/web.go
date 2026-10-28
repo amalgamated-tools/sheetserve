@@ -17,6 +17,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/auth"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
@@ -156,6 +157,15 @@ func (d *Dashboard) change(w http.ResponseWriter, r *http.Request, u user, to st
 	}
 	d.Tenants.Invalidate(u.id)
 	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// audit logs a change u made in the dashboard. Call it only once the change has been saved.
+func audit(ctx context.Context, u user, action string, attrs ...slog.Attr) {
+	slog.LogAttrs(ctx, slog.LevelInfo, "audit", append([]slog.Attr{
+		slog.String(otelkeys.Action, action),
+		slog.Int64(otelkeys.UserID, u.id),
+		slog.String(otelkeys.UserEmail, u.email),
+	}, attrs...)...)
 }
 
 func userMessage(err error) string {

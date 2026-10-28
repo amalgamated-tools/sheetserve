@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
@@ -69,8 +71,11 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 		snap, ok := s.cache[k]
 		s.mu.Unlock()
 		if ok && time.Since(snap.at) < s.cacheTTL {
+			slog.DebugContext(ctx, "cache hit", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
+				slog.Int64(otelkeys.AgeMs, time.Since(snap.at).Milliseconds()))
 			return snap, nil
 		}
+		slog.DebugContext(ctx, "cache miss", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
 	}
 	vals, err := s.store.Read(ctx, s.settings.Spreadsheets[sheet].ID, tab)
 	if err != nil {
@@ -93,15 +98,19 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 }
 
 // lockTab serializes writes to one tab and drops its cache entry once the write is done.
-func (s *Service) lockTab(sheet, tab string) func() {
+func (s *Service) lockTab(ctx context.Context, sheet, tab string) func() {
 	k := sheet + "/" + tab
 	m, _ := s.locks.LoadOrStore(k, &sync.Mutex{})
 	m.(*sync.Mutex).Lock()
 	return func() {
 		s.mu.Lock()
+		_, cached := s.cache[k]
 		delete(s.cache, k)
 		s.mu.Unlock()
 		m.(*sync.Mutex).Unlock()
+		if cached {
+			slog.DebugContext(ctx, "cache invalidate", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
+		}
 	}
 }
 
@@ -343,7 +352,7 @@ func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[strin
 }
 
 func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[string]any) (map[string]any, error) {
-	defer s.lockTab(sheet, tab)()
+	defer s.lockTab(ctx, sheet, tab)()
 	snap, err := s.load(ctx, sheet, tab, true)
 	if err != nil {
 		return nil, err
@@ -382,7 +391,7 @@ func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[
 	if len(fields) == 0 {
 		return nil, BadRequest("no fields to update")
 	}
-	defer s.lockTab(sheet, tab)()
+	defer s.lockTab(ctx, sheet, tab)()
 	snap, err := s.load(ctx, sheet, tab, true)
 	if err != nil {
 		return nil, err
@@ -411,7 +420,7 @@ func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[
 }
 
 func (s *Service) Delete(ctx context.Context, sheet, tab, id string) error {
-	defer s.lockTab(sheet, tab)()
+	defer s.lockTab(ctx, sheet, tab)()
 	snap, err := s.load(ctx, sheet, tab, true)
 	if err != nil {
 		return err

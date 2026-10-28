@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/amalgamated-tools/sheetserve/internal/testutil/oteltest"
 )
 
 func TestLoggingMiddleware(t *testing.T) {
@@ -37,6 +39,27 @@ func TestLoggingMiddleware(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, w.Code)
 	})
+}
+
+// Each request logs one line with its path but not its query string; a 5xx logs at error.
+func TestLoggingMiddlewareLogsRequest(t *testing.T) {
+	logs := oteltest.CaptureLogs(t)
+	for _, status := range []int{http.StatusOK, http.StatusBadGateway} {
+		next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+		r := httptest.NewRequest(http.MethodPost, "/v1/shop/Orders?email=ann@example.com", nil)
+		LoggingMiddleware(next).ServeHTTP(httptest.NewRecorder(), r)
+	}
+
+	recs := logs("http request")
+	require.Len(t, recs, 2)
+	require.Equal(t, "INFO", recs[0]["level"])
+	require.Equal(t, "ERROR", recs[1]["level"])
+	for i, status := range []float64{200, 502} {
+		require.Equal(t, "POST", recs[i]["method"])
+		require.Equal(t, "/v1/shop/Orders", recs[i]["path"])
+		require.Equal(t, status, recs[i]["status_code"])
+		require.Contains(t, recs[i], "duration_ms")
+	}
 }
 
 func TestGetRequestID_MissingValues(t *testing.T) {

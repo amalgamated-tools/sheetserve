@@ -33,3 +33,5 @@ services:
         sync: false
       - key: OTEL_RESOURCE_ATTRIBUTES
         value: deployment.environment.name=production
+      - key: LOG_LEVEL # debug adds each Google Sheets call and cache hit/miss
+        value: debug

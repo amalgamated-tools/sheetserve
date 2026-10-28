@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/amalgamated-tools/sheetserve/internal/otel"
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
@@ -9,10 +11,11 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
-// LoggingMiddleware returns an HTTP middleware that emits a structured debug
-// log entry at the start of each request (method, URL, remote address, user
-// agent, request ID, and user ID) and a second entry upon completion
-// (method, URL, status code, elapsed duration, request ID, and user ID).
+// LoggingMiddleware returns an HTTP middleware that records each request on a
+// span and logs one "http request" entry when it completes: method, path,
+// status code and duration, plus the request and trace IDs every *Context log
+// carries. A 5xx response logs at error, anything else at info. The query
+// string is left out because API filters can hold personal data.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// Before StartSpan: Trace skips health checks, so a span started here
@@ -38,9 +41,22 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		}
 		span.SetAttributes(attrs...)
 
+		start := time.Now()
 		rec := RecorderFor(w)
 		next.ServeHTTP(rec, r)
 		span.SetAttributes(attribute.Int(otelkeys.StatusCode, rec.StatusCode))
+
+		level := slog.LevelInfo
+		if rec.StatusCode >= http.StatusInternalServerError {
+			level = slog.LevelError
+		}
+		slog.LogAttrs(newctx, level, "http request",
+			slog.String(otelkeys.Method, r.Method),
+			slog.String(otelkeys.Path, r.URL.Path),
+			slog.Int(otelkeys.StatusCode, rec.StatusCode),
+			slog.Int64(otelkeys.DurationMs, time.Since(start).Milliseconds()),
+		)
+
 		if rec.StatusCode >= http.StatusInternalServerError {
 			span.SetStatus(codes.Error, http.StatusText(rec.StatusCode))
 		} else {

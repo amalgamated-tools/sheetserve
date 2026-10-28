@@ -4,7 +4,22 @@ import (
 	"context"
 	"log/slog"
 	"sync/atomic"
+
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// Every *Context log call made inside a span carries its trace ID, so a log
+// line in the console can be found in the tracing backend.
+func init() {
+	RegisterContextLogAttr(func(ctx context.Context) (slog.Attr, bool) {
+		if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+			return slog.String(otelkeys.TraceID, sc.TraceID().String()), true
+		}
+
+		return slog.Attr{}, false
+	})
+}
 
 // ContextLogAttrFunc extracts a log attribute from a context, reporting
 // false when the context carries nothing to add.

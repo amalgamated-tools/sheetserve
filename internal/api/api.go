@@ -150,7 +150,7 @@ func endpoint(op string, h handlerFunc) http.Handler {
 		if key != nil {
 			keyName = key.Name
 		}
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "op", op, "key", keyName,
+		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "op", op, "key", keyName,
 			"status", status, "reason", reason, "duration_ms", time.Since(start).Milliseconds())
 	})
 }

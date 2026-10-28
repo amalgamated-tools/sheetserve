@@ -3,12 +3,16 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
+
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 )
 
 // Store is the raw spreadsheet backend. Rows are 1-based sheet row numbers; columns are 0-based.
@@ -47,7 +51,8 @@ func NewGoogleStore(ctx context.Context, opts ...option.ClientOption) (*googleSt
 	return &googleStore{svc: svc, gids: map[string]int64{}}, nil
 }
 
-func (g *googleStore) Read(ctx context.Context, id, tab string) ([][]any, error) {
+func (g *googleStore) Read(ctx context.Context, id, tab string) (_ [][]any, err error) {
+	defer logCall(ctx, "read", id, tab, time.Now(), &err)
 	resp, err := g.svc.Spreadsheets.Values.Get(id, quoteTab(tab)).
 		ValueRenderOption("UNFORMATTED_VALUE").
 		DateTimeRenderOption("FORMATTED_STRING").
@@ -60,13 +65,15 @@ func (g *googleStore) Read(ctx context.Context, id, tab string) ([][]any, error)
 
 // Writes use RAW input so client data is never parsed as a formula.
 
-func (g *googleStore) Append(ctx context.Context, id, tab string, row []any) error {
-	_, err := g.svc.Spreadsheets.Values.Append(id, quoteTab(tab)+"!A1", &sheets.ValueRange{Values: [][]any{row}}).
+func (g *googleStore) Append(ctx context.Context, id, tab string, row []any) (err error) {
+	defer logCall(ctx, "append", id, tab, time.Now(), &err)
+	_, err = g.svc.Spreadsheets.Values.Append(id, quoteTab(tab)+"!A1", &sheets.ValueRange{Values: [][]any{row}}).
 		ValueInputOption("RAW").InsertDataOption("INSERT_ROWS").Context(ctx).Do()
 	return err
 }
 
-func (g *googleStore) SetCells(ctx context.Context, id, tab string, row int, cells map[int]any) error {
+func (g *googleStore) SetCells(ctx context.Context, id, tab string, row int, cells map[int]any) (err error) {
+	defer logCall(ctx, "set_cells", id, tab, time.Now(), &err)
 	req := &sheets.BatchUpdateValuesRequest{ValueInputOption: "RAW"}
 	for col, v := range cells {
 		req.Data = append(req.Data, &sheets.ValueRange{
@@ -74,11 +81,12 @@ func (g *googleStore) SetCells(ctx context.Context, id, tab string, row int, cel
 			Values: [][]any{{v}},
 		})
 	}
-	_, err := g.svc.Spreadsheets.Values.BatchUpdate(id, req).Context(ctx).Do()
+	_, err = g.svc.Spreadsheets.Values.BatchUpdate(id, req).Context(ctx).Do()
 	return err
 }
 
-func (g *googleStore) DeleteRow(ctx context.Context, id, tab string, row int) error {
+func (g *googleStore) DeleteRow(ctx context.Context, id, tab string, row int) (err error) {
+	defer logCall(ctx, "delete_row", id, tab, time.Now(), &err)
 	gid, err := g.gid(ctx, id, tab)
 	if err != nil {
 		return err
@@ -95,7 +103,8 @@ func (g *googleStore) DeleteRow(ctx context.Context, id, tab string, row int) er
 }
 
 // Tabs returns the spreadsheet's tab titles in sheet order.
-func (g *googleStore) Tabs(ctx context.Context, id string) ([]string, error) {
+func (g *googleStore) Tabs(ctx context.Context, id string) (_ []string, err error) {
+	defer logCall(ctx, "tabs", id, "", time.Now(), &err)
 	ss, err := g.svc.Spreadsheets.Get(id).Fields("sheets.properties.title").Context(ctx).Do()
 	if err != nil {
 		return nil, err
@@ -108,7 +117,8 @@ func (g *googleStore) Tabs(ctx context.Context, id string) ([]string, error) {
 }
 
 // Create makes a spreadsheet with tabs in order, each with its header row written and frozen.
-func (g *googleStore) Create(ctx context.Context, title string, tabs []Tab) (string, error) {
+func (g *googleStore) Create(ctx context.Context, title string, tabs []Tab) (_ string, err error) {
+	defer logCall(ctx, "create", "", "", time.Now(), &err)
 	ss := &sheets.Spreadsheet{Properties: &sheets.SpreadsheetProperties{Title: title}}
 	for _, t := range tabs {
 		var header []*sheets.CellData
@@ -145,6 +155,25 @@ func (g *googleStore) gid(ctx context.Context, id, tab string) (int64, error) {
 		return 0, fmt.Errorf("tab %q not found in spreadsheet", tab)
 	}
 	return v, nil
+}
+
+// logCall logs a Google Sheets call at debug once it returns, as
+// defer logCall(ctx, op, id, tab, time.Now(), &err). An empty id or tab is left out.
+func logCall(ctx context.Context, op, id, tab string, start time.Time, err *error) {
+	if !slog.Default().Enabled(ctx, slog.LevelDebug) {
+		return
+	}
+	attrs := []slog.Attr{slog.String(otelkeys.Op, op), slog.Int64(otelkeys.DurationMs, time.Since(start).Milliseconds())}
+	if id != "" {
+		attrs = append(attrs, slog.String(otelkeys.SpreadsheetID, id))
+	}
+	if tab != "" {
+		attrs = append(attrs, slog.String(otelkeys.Tab, tab))
+	}
+	if *err != nil {
+		attrs = append(attrs, slog.Any(otelkeys.Error, *err))
+	}
+	slog.LogAttrs(ctx, slog.LevelDebug, "google sheets call", attrs...)
 }
 
 func quoteTab(tab string) string { return "'" + strings.ReplaceAll(tab, "'", "''") + "'" }

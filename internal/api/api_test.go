@@ -17,6 +17,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/testutil/oteltest"
 )
 
 // fakeStore keeps tabs in memory, keyed by "spreadsheetID/tab".
@@ -557,5 +558,28 @@ func TestRoutesWithoutAPI(t *testing.T) {
 	Routes(r)
 	if status, body := call(t, r, "GET", "/v1/shop/Orders", "admin-key", ""); status != http.StatusInternalServerError {
 		t.Errorf("got %d %s", status, body)
+	}
+}
+
+// With a cache TTL, the first read misses, the next hits, and a write drops the entry so the
+// read after it misses again.
+func TestCacheLogs(t *testing.T) {
+	logs := oteltest.CaptureLogs(t)
+	h := newTestAPI(t)
+	call(t, h, "GET", "/v1/shop/Orders", "admin-key", "")
+	call(t, h, "GET", "/v1/shop/Orders", "admin-key", "")
+	if s, body := call(t, h, "POST", "/v1/shop/Orders", "admin-key", `{"item":"mug"}`); s != 201 {
+		t.Fatalf("create: %d %s", s, body)
+	}
+	call(t, h, "GET", "/v1/shop/Orders", "admin-key", "")
+
+	if got := len(logs("cache miss")); got != 2 {
+		t.Errorf("cache misses: %d, want 2", got)
+	}
+	if hits := logs("cache hit"); len(hits) != 1 || hits[0]["sheet"] != "shop" || hits[0]["tab"] != "Orders" || hits[0]["age_ms"] == nil {
+		t.Errorf("cache hits: %v", hits)
+	}
+	if got := len(logs("cache invalidate")); got != 1 {
+		t.Errorf("cache invalidations: %d, want 1", got)
 	}
 }
