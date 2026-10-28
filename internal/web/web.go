@@ -98,7 +98,7 @@ func (d *Dashboard) Routes(r chi.Router) {
 }
 
 func (d *Dashboard) routes(mux chi.Router) {
-	mux.Handle("GET /static/*", http.FileServerFS(static))
+	mux.Method(http.MethodGet, "/static/*", http.FileServerFS(static))
 	mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := d.Auth.CurrentUser(r); ok {
 			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
