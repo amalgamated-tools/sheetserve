@@ -289,6 +289,11 @@ func TestDashboardPages(t *testing.T) {
 			t.Errorf("signed-out %s: %d", page, s)
 		}
 	}
+	for _, file := range []string{"/static/app.css", "/static/app.js", "/static/sheets.js"} {
+		if s, _ := get(t, browser(t), srv.URL+file, ""); s != 200 {
+			t.Errorf("%s: %d", file, s)
+		}
+	}
 
 	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `<a class="button primary" href="/sheets/new">`) {
 		t.Errorf("sheets page has no create button: %d", s)
