@@ -10,7 +10,13 @@ _.file = ".env"
 
 [tasks.build]
 description = "Build the sheetserve binary"
-sources = ["go.mod", "go.sum", "cmd/**/*.go", "internal/**/*.go", "internal/**/*.html"]
+sources = [
+  "go.mod",
+  "go.sum",
+  "cmd/**/*.go",
+  "internal/**/*.go",
+  "internal/**/*.html",
+]
 outputs = ["sheetserve"]
 run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sheetserve ./cmd/server"
 
@@ -30,8 +36,21 @@ run = "go test -race ./..."
 description = "Run the live Google Sheets test (needs SHEETSERVE_LIVE_SHEET_ID and GOOGLE_APPLICATION_CREDENTIALS)"
 run = "go test -count=1 -v -run TestLive ./internal/integration"
 
+[tasks.vuln]
+description = "Check for known vulnerabilities"
+# ponytail: fails on stdlib vulns too; CI only fails on third-party ones.
+run = "go tool govulncheck ./..."
+
 [tasks.lint]
-description = "Run golangci-lint"
+depends = [
+  "nilaway",
+  "otelkeyscheck",
+  "otelkeys:alphabetized",
+  "otelkeys:unused",
+  "slogcheck",
+  "vuln",
+]
+description = "Run Go linter"
 run = "golangci-lint run ./..."
 
 [tasks.fmt]
@@ -62,3 +81,65 @@ run = "docker build -t sheetserve ."
 [tasks.clean]
 description = "Remove build output"
 run = "rm -f sheetserve"
+
+[tasks.coverage]
+description = "Run Go tests with coverage"
+run = "go test -race -coverprofile=coverage.out -covermode=atomic ./..."
+
+[tasks.slogcheck]
+description = "Run slogcheck"
+run = "go run ./cmd/slogcheck ./..."
+
+[tasks.otelkeyscheck]
+description = "Run otelkeys ordering/format checks"
+run = "go run ./cmd/otelkeyscheck ./..."
+
+[tasks."otelkeys:alphabetized"]
+description = "Check alphabetized consts in each internal/otelkeys file"
+run = '''
+{% raw %}
+#!/usr/bin/env bash
+set -euo pipefail
+
+shopt -s nullglob
+files=(internal/otelkeys/*_keys.go)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  printf 'no otelkeys files found under internal/otelkeys\n' >&2
+  exit 1
+fi
+
+for file in "${files[@]}"; do
+  printf 'checking alphabetized constants in %s\n' "$file"
+  go run ./cmd/otelkeyscheck "./$file"
+done
+
+printf 'all internal/otelkeys const blocks are alphabetized\n'
+{% endraw %}
+'''
+
+[tasks."otelkeys:unused"]
+description = "Fail if any const in internal/otelkeys is not referenced elsewhere"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+declared=$(grep -hoE '^\s+[A-Z][A-Za-z0-9_]*\s+(string\s+)?=' internal/otelkeys/*.go | awk '{print $1}' | sort -u)
+# testdata holds analyzer stubs; line comments are not usage.
+used=$(grep -rhE 'otelkeys\.' --include='*.go' --exclude-dir=otelkeys --exclude-dir=testdata . | grep -vE '^\s*//' | grep -oE '\botelkeys\.[A-Z][A-Za-z0-9_]*' | sed 's/^otelkeys\.//' | sort -u)
+
+unused=$(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$used"))
+if [[ -n "$unused" ]]; then
+  printf 'unused otelkeys constants:\n%s\n' "$unused" >&2
+  exit 1
+fi
+printf 'all %d otelkeys constants are in use\n' "$(printf '%s\n' "$declared" | wc -l | tr -d ' ')"
+'''
+
+[tasks.nilaway]
+description = "Run nilaway"
+run = "go tool nilaway -exclude-file-docstrings='Code generated' ./..."
+
+[tasks.hardfmt]
+description = "Run hardfmt"
+run = "go tool gofumpt -w -l ."

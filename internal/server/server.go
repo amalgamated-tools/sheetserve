@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/sync/errgroup"
@@ -23,6 +24,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otel"
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
+	smiddleware "github.com/amalgamated-tools/sheetserve/internal/server/middleware"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
 	"github.com/amalgamated-tools/sheetserve/internal/web"
@@ -60,12 +62,11 @@ type ShutdownFunc func(context.Context) error
 type Server struct {
 	Address string
 
-	cfg         *config.Config
-	environment string
-	db          *db.DB
-	auth        *auth.Google
-	tenants     *tenancy.Tenants
-	dash        *web.Dashboard
+	cfg     *config.Config
+	db      *db.DB
+	auth    *auth.Google
+	tenants *tenancy.Tenants
+	dash    *web.Dashboard
 
 	httpServer    *http.Server
 	port          int
@@ -137,12 +138,11 @@ func (s *Server) setupRoutes(ctx context.Context) {
 // the panic back to middleware.Recoverer upstream, which answers 500.
 func middlewareChain(next http.Handler) http.Handler {
 	return alice.New(
-		// smiddleware.RequestIDHandler,
-		// smiddleware.Trace,
-		// smiddleware.Metrics,
+		smiddleware.RequestIDHandler,
+		smiddleware.Trace,
+		smiddleware.Metrics,
 		middleware.Recoverer,
-		// smiddleware.LoggingMiddleware,
-		// sentryHandler.Handle,
+		smiddleware.LoggingMiddleware,
 	).Then(next)
 }
 
@@ -153,7 +153,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer span.End()
 	defer otel.ObserveDuration(newctx, otelkeys.ServerRunDuration)()
 
-	slog.InfoContext(newctx, "Running server", slog.String("address", s.Address))
+	slog.InfoContext(newctx, "Running server", slog.String(otelkeys.ServerAddress, s.Address))
 
 	ctx, cancel := context.WithCancel(newctx)
 	defer cancel()
@@ -166,11 +166,11 @@ func (s *Server) Run(ctx context.Context) error {
 		WriteTimeout:      HTTPWriteTimeout,
 		ReadTimeout:       HTTPReadTimeout,
 		IdleTimeout:       HTTPIdleTimeout,
-		// // Request contexts derive from BaseContext (not from Run's ctx), so
-		// // tag it here to scope handler and access logs to the http component.
-		// BaseContext: func(net.Listener) context.Context {
-		// 	return otel.WithComponent(context.Background(), otel.ComponentHTTP)
-		// },
+		// Request contexts derive from BaseContext (not from Run's ctx), so
+		// tag it here to scope handler and access logs to the http component.
+		BaseContext: func(net.Listener) context.Context {
+			return otel.WithComponent(context.Background(), otel.ComponentServer)
+		},
 	}
 
 	errCh := make(chan error, 1)
@@ -213,10 +213,9 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) shutdown(ctx context.Context) error {
-	newctx := ctx
-	// newctx, span := otel.StartSpan(otel.WithComponent(ctx, otel.ComponentHTTP), instrumentationName, otelkeys.ServerShutdown)
-	// defer span.End()
-	// defer otel.ObserveDuration(newctx, otelkeys.ServerShutdownDuration)()
+	newctx, span := otel.StartSpan(otel.WithComponent(ctx, otel.ComponentServer), instrumentationName, otelkeys.ServerShutdown)
+	defer span.End()
+	defer otel.ObserveDuration(newctx, otelkeys.ServerShutdownDuration)()
 
 	// The incoming ctx is typically already cancelled (that's what triggered
 	// shutdown), so detach from it before applying the grace-period timeout —
@@ -237,7 +236,7 @@ func (s *Server) shutdown(ctx context.Context) error {
 		// otel.RecordError(span, "shutdown functions failed", err)
 		return fmt.Errorf("shutdown functions failed: %w", err)
 	}
-	// span.SetStatus(codes.Ok, "")
+	span.SetStatus(codes.Ok, "")
 
 	return nil
 }

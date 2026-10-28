@@ -12,6 +12,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/config"
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otel"
+	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 	"github.com/amalgamated-tools/sheetserve/internal/server"
 	"golang.org/x/sync/errgroup"
 )
@@ -31,7 +32,7 @@ func main() {
 	}()
 
 	if err := realMain(ctx); err != nil {
-		slog.ErrorContext(ctx, "error occurred", slog.Any("error", err))
+		slog.ErrorContext(ctx, "error occurred", slog.Any(otelkeys.Error, err))
 		os.Exit(1)
 	}
 
@@ -73,7 +74,7 @@ func realMain(ctx context.Context) error {
 
 	err = g.Wait()
 	if err != nil {
-		slog.ErrorContext(ctx, "error occurred", slog.Any("error", err))
+		slog.ErrorContext(ctx, "error occurred", slog.Any(otelkeys.Error, err))
 		return err
 	}
 

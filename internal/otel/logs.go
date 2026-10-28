@@ -141,6 +141,7 @@ func setupLogger(ctx context.Context, attrs ...any) {
 	if env := strings.ToLower(os.Getenv(environmentVar)); env != "" {
 		attrs = append(attrs, slog.String(otelkeys.Environment, env))
 	}
+	logger = logger.With(attrs...)
 
 	logger.InfoContext(
 		ctx,
