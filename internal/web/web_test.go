@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -352,7 +353,7 @@ func TestCreateSheet(t *testing.T) {
 	dash, srv := newTestDashboard(t, fs)
 	alice := signInAs(t, dash, srv, "alice")
 
-	form := url.Values{"name": {"shop"}, "schema": {"Orders: item, qty\n\nNotes"}}
+	form := url.Values{"name": {"shop"}, "schema": {"Orders: item, qty\n\nNotes\nProducts: *sku, name"}}
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 303 {
 		t.Fatalf("create sheet: %d %s", s, body)
 	}
@@ -361,6 +362,13 @@ func TestCreateSheet(t *testing.T) {
 	}
 	if got := fs.tabs["new-shop/Notes"]; len(got) == 0 || !slices.Equal(got[0], []any{"id"}) {
 		t.Errorf("Notes header: %v", got)
+	}
+	// A tab with a * key gets no id column, and its key column is set already.
+	if got := fs.tabs["new-shop/Products"]; len(got) == 0 || !slices.Equal(got[0], []any{"sku", "name"}) {
+		t.Errorf("Products header: %v", got)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, `value="sku"`) {
+		t.Errorf("Products key column not shown as sku: %s", body)
 	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}); s != 303 {
 		t.Fatalf("save tab: %d %s", s, body)
@@ -393,10 +401,17 @@ func TestCreateSheetUnsupported(t *testing.T) {
 }
 
 func TestParseSchema(t *testing.T) {
-	tabs, err := parseSchema(" Orders : item,  qty ,\r\nPeople: id, name\n\n")
-	want := []store.Tab{{Name: "Orders", Columns: []string{"id", "item", "qty"}}, {Name: "People", Columns: []string{"id", "name"}}}
+	tabs, keys, err := parseSchema(" Orders : item,  qty ,\r\nPeople: id, name\nProducts: name, * sku\n\n")
+	want := []store.Tab{
+		{Name: "Orders", Columns: []string{"id", "item", "qty"}},
+		{Name: "People", Columns: []string{"id", "name"}},
+		{Name: "Products", Columns: []string{"name", "sku"}},
+	}
 	if err != nil || !slices.EqualFunc(tabs, want, func(a, b store.Tab) bool { return a.Name == b.Name && slices.Equal(a.Columns, b.Columns) }) {
 		t.Errorf("parseSchema: %v, %v", tabs, err)
+	}
+	if !maps.Equal(keys, map[string]string{"Products": "sku"}) {
+		t.Errorf("parseSchema keys: %v", keys)
 	}
 	for in, msg := range map[string]string{
 		"":                     "at least one tab",
@@ -404,8 +419,11 @@ func TestParseSchema(t *testing.T) {
 		"a/b: item":            "must not contain /",
 		"Orders\norders: item": "listed twice",
 		"Orders: qty, qty":     "listed twice",
+		"Orders: *sku, sku":    "listed twice",
+		"Orders: *a, *b":       "only one column",
+		"Orders: item, *":      "needs a column name",
 	} {
-		if _, err := parseSchema(in); err == nil || !strings.Contains(err.Error(), msg) {
+		if _, _, err := parseSchema(in); err == nil || !strings.Contains(err.Error(), msg) {
 			t.Errorf("parseSchema(%q): %v, want %q", in, err, msg)
 		}
 	}

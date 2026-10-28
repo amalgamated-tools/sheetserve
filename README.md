@@ -62,7 +62,8 @@ Customers: name, email
 ```
 
 The server creates the spreadsheet in your Drive with your Google account, writes and freezes each header row,
-and puts an `id` column first unless you list one. `drive.file` covers files the app creates, so you don't need to pick it.
+and puts an `id` column first unless you list one. To use another key column, mark it with `*`, as in `Products: *sku, name, price`.
+That tab gets no `id` column, and its key column is set already. `drive.file` covers files the app creates, so you don't need to pick it.
 
 A key acts through the Google account of the user who made it.
 
