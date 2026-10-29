@@ -471,24 +471,59 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 	return s.toObject(snap, row, sheet, tab), nil
 }
 
-// TODO: rows are located by id just before writing; a human inserting/deleting rows in the
-// sheet during that window can shift the target row. Fine for API-owned tabs.
+// locateTries is how many times locate reads a tab again when the row it found moves before it can
+// be written.
+const locateTries = 3
+
+// locate reads the tab fresh and finds the row whose key is id, then reads that row's key cell back
+// from the sheet just before the caller writes to it. Someone inserting or deleting rows by hand in
+// the meantime moves rows, so when the cell no longer holds id, it reads the tab again. The caller
+// must hold the tab's lock. Only the moments between that check and the write stay unguarded. check,
+// if set, vets each read of the tab before the row is looked for.
+func (s *Service) locate(ctx context.Context, sheet, tab, id string, check func(snapshot) error) (snapshot, int, error) {
+	cr, canCheck := s.store.(store.CellReader)
+	for range locateTries {
+		snap, err := s.load(ctx, sheet, tab, true)
+		if err != nil {
+			return snapshot{}, 0, err
+		}
+		if check != nil {
+			if err := check(snap); err != nil {
+				return snapshot{}, 0, err
+			}
+		}
+		i, err := s.find(snap, sheet, tab, id)
+		if err != nil || !canCheck {
+			return snap, i, err
+		}
+		v, err := cr.ReadCell(ctx, s.settings.Spreadsheets[sheet].ID, tab, i+2, snap.key)
+		if err != nil {
+			return snapshot{}, 0, err
+		}
+		if f, isNum := v.(float64); isNum {
+			if t := s.columns(sheet, tab)[snap.header[snap.key]].Type; t == "date" || t == "datetime" {
+				v = fromSerial(f, t == "datetime")
+			}
+		}
+		if v != nil && fmt.Sprint(v) == id {
+			return snap, i, nil
+		}
+		slog.WarnContext(ctx, "row moved before write", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
+	}
+	return snapshot{}, 0, &APIError{http.StatusConflict, "rows in " + sheet + "/" + tab + " kept moving while writing; try again"}
+}
+
 func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[string]any) (map[string]any, error) {
 	if len(fields) == 0 {
 		return nil, BadRequest("no fields to update")
 	}
 	defer s.lockTab(ctx, sheet, tab)()
-	snap, err := s.load(ctx, sheet, tab, true)
-	if err != nil {
-		return nil, err
-	}
-	if snap.key < 0 {
-		return nil, s.noKey(sheet, tab)
-	}
-	if err := s.checkFields(snap, sheet, tab, fields, false); err != nil {
-		return nil, err
-	}
-	i, err := s.find(snap, sheet, tab, id)
+	snap, i, err := s.locate(ctx, sheet, tab, id, func(snap snapshot) error {
+		if snap.key < 0 {
+			return s.noKey(sheet, tab)
+		}
+		return s.checkFields(snap, sheet, tab, fields, false)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -508,11 +543,7 @@ func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[
 
 func (s *Service) Delete(ctx context.Context, sheet, tab, id string) error {
 	defer s.lockTab(ctx, sheet, tab)()
-	snap, err := s.load(ctx, sheet, tab, true)
-	if err != nil {
-		return err
-	}
-	i, err := s.find(snap, sheet, tab, id)
+	_, i, err := s.locate(ctx, sheet, tab, id, nil)
 	if err != nil {
 		return err
 	}
