@@ -27,10 +27,16 @@ type serialStore struct {
 	rows    [][]any
 	serials map[int][]any // by column, from row 1
 	written [][]any
+	reads   int // Read and ReadSerial calls
 }
 
-func (f *serialStore) Read(context.Context, string, string) ([][]any, error) { return f.rows, nil }
+func (f *serialStore) Read(context.Context, string, string) ([][]any, error) {
+	f.reads++
+	return f.rows, nil
+}
+
 func (f *serialStore) ReadSerial(_ context.Context, _, _ string, cols []int) ([][]any, error) {
+	f.reads++
 	var out [][]any
 	for _, c := range cols {
 		out = append(out, f.serials[c])
@@ -251,5 +257,55 @@ func TestLocateRowThatMoved(t *testing.T) {
 	st = newStore(0)
 	if _, err := New(cfg, st, 0).Update(ctx, "shop", "Orders", "b", map[string]any{"nope": 1}); err == nil || st.reads != 0 {
 		t.Errorf("bad field: %v, %d reads", err, st.reads)
+	}
+}
+
+// Users who added the same spreadsheet, under different names and settings, share its cached tabs:
+// each applies its own settings to the shared values without changing them, and a write by one
+// drops the tab for both.
+func TestSharedCache(t *testing.T) {
+	tasks := func(name string, rule db.TabRule) *db.Settings {
+		cfg := &db.Settings{Spreadsheets: map[string]db.SheetRule{name: {ID: "SS", Tabs: map[string]db.TabRule{"Tasks": rule}}}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	st := &serialStore{
+		rows:    [][]any{{"id", "due", "note"}, {"a", "11/5/2026", "hi"}},
+		serials: map[int][]any{1: {"due", 46331.0}},
+	}
+	cache := NewCache(time.Minute)
+	alice := New(tasks("work", db.TabRule{Ops: db.AllOps, Columns: map[string]db.Column{"due": {Type: "date"}}}), st, 0)
+	bob := New(tasks("team", db.TabRule{Ops: db.AllOps, Hidden: []string{"note"}}), st, 0)
+	alice.UseCache(cache)
+	bob.UseCache(cache)
+	ctx := context.Background()
+
+	a, _, err := alice.List(ctx, "work", "Tasks", nil, "", 0, 0)
+	if err != nil || a[0]["due"] != "2026-11-05" || a[0]["note"] != "hi" {
+		t.Fatalf("alice: %v %v", a, err)
+	}
+	reads := st.reads // the tab, and its date column as serials
+	b, _, err := bob.List(ctx, "team", "Tasks", nil, "", 0, 0)
+	if err != nil || b[0]["due"] != "11/5/2026" || b[0]["note"] != nil || st.reads != reads {
+		t.Fatalf("bob: %v %v, %d reads after alice's %d", b, err, st.reads, reads)
+	}
+	if a, _, err = alice.List(ctx, "work", "Tasks", nil, "", 0, 0); err != nil || a[0]["due"] != "2026-11-05" || st.reads != reads {
+		t.Errorf("alice again: %v %v, %d reads", a, err, st.reads)
+	}
+	if st.rows[1][1] != "11/5/2026" {
+		t.Errorf("cached values changed: %v", st.rows[1])
+	}
+
+	if _, err := alice.Create(ctx, "work", "Tasks", map[string]any{"note": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	reads = st.reads
+	if _, _, err := bob.List(ctx, "team", "Tasks", nil, "", 0, 0); err != nil || st.reads != reads+1 {
+		t.Errorf("bob after alice's write: %v, %d reads, want %d", err, st.reads, reads+1)
+	}
+	if alice.cache.lock(cacheKey("SS", "Tasks")) != bob.cache.lock(cacheKey("SS", "Tasks")) {
+		t.Error("alice and bob have their own lock for the same tab")
 	}
 }

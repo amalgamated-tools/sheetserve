@@ -10,6 +10,7 @@ The server keeps them in SQLite.
 - `/mcp` serves an MCP endpoint. Each key gets tools for the tabs it can reach, built from the header row.
 - `/openapi.json` serves an OpenAPI 3.1 spec. It lists only the tabs, ops and columns the caller's key can use.
 - When `SHEETSERVE_CACHE_TTL` is set, a per-tab cache stores reads. Any write to a tab clears that tab's cache.
+  Users who added the same spreadsheet share its cache, and changing settings in the dashboard keeps it.
 - Every request is logged as JSON, with its status, duration, request ID and trace ID. API requests also log the key name and the reason for any refusal.
 - Sign-ins and dashboard changes, such as a new key or a tab rule, are logged as `audit` records that name the user.
 
@@ -203,7 +204,8 @@ CI (`.github/workflows/ci.yml`) runs `mise run check` and `mise run build` on pu
 ## Known limits
 
 - Run one instance only. The cache, the write locks and the per-user state live in the process.
-- Two users who add the same spreadsheet do not share write locks.
+- Users who added the same spreadsheet share its cached tabs. If one of them loses access to it in Google, they can still read
+  what the cache holds until it expires.
 - If a user revokes the app's access in their Google account, their keys return `502` until they sign in again.
 - An update or delete finds its row by key, then reads that row's key cell back just before it writes. If someone inserted or
   deleted rows by hand in between, it finds the row again, and after three tries it returns `409`. That costs one extra read

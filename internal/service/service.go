@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -37,73 +36,84 @@ var errNotFound = &APIError{http.StatusNotFound, "row not found"}
 type Service struct {
 	settings *db.Settings
 	store    store.Store
-	cacheTTL time.Duration
-
-	mu    sync.Mutex
-	cache map[string]snapshot
-	locks *sync.Map // "sheet/tab" -> *sync.Mutex
+	cache    *Cache
 }
 
 type snapshot struct {
 	header []string
 	rows   [][]any
 	key    int // index of the key column in header, or -1 when the tab has none
-	at     time.Time
 }
 
+// New returns a Service with a cache of its own that keeps tabs for cacheTTL. Tenants share one
+// with UseCache.
 func New(settings *db.Settings, store store.Store, cacheTTL time.Duration) *Service {
-	return &Service{settings: settings, store: store, cacheTTL: cacheTTL, cache: map[string]snapshot{}, locks: &sync.Map{}}
+	return &Service{settings: settings, store: store, cache: NewCache(cacheTTL)}
 }
 
-func (s *Service) UseLocks(locks *sync.Map) { s.locks = locks }
+// UseCache makes s read tabs through, and lock them in, c.
+func (s *Service) UseCache(c *Cache) { s.cache = c }
 
-func (s *Service) SharesLocks(other *Service) bool { return s.locks == other.locks }
+func (s *Service) SharesCache(other *Service) bool { return s.cache == other.cache }
 
 func (s *Service) Tabs(ctx context.Context, spreadsheetID string) ([]string, error) {
 	return s.store.Tabs(ctx, spreadsheetID)
 }
 
-// TODO: in-process cache and locks; a second replica needs Redis + a distributed lock.
+// load returns the tab with this user's settings applied: its key column, and dates as ISO 8601.
+// It reads through the cache unless fresh is set.
+//
+// TODO: the cache and locks are in-process; a second replica needs Redis and a distributed lock.
 func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snapshot, error) {
-	k := sheet + "/" + tab
-	if !fresh && s.cacheTTL > 0 {
-		s.mu.Lock()
-		snap, ok := s.cache[k]
-		s.mu.Unlock()
-		if ok && time.Since(snap.at) < s.cacheTTL {
-			slog.DebugContext(ctx, "cache hit", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
-				slog.Int64(otelkeys.AgeMs, time.Since(snap.at).Milliseconds()))
-			return snap, nil
-		}
-		slog.DebugContext(ctx, "cache miss", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
-	}
-	vals, err := s.store.Read(ctx, s.settings.Spreadsheets[sheet].ID, tab)
+	t, err := s.read(ctx, sheet, tab, fresh)
 	if err != nil {
 		return snapshot{}, err
 	}
-	snap := snapshot{at: time.Now()}
-	if len(vals) > 0 {
-		for _, h := range vals[0] {
+	var snap snapshot
+	if len(t.vals) > 0 {
+		for _, h := range t.vals[0] {
 			snap.header = append(snap.header, fmt.Sprint(h))
 		}
-		snap.rows = vals[1:]
+		snap.rows = t.vals[1:]
 	}
 	snap.key = slices.Index(snap.header, s.keyColumn(sheet, tab))
-	if err := s.readDates(ctx, sheet, tab, snap); err != nil {
+	if err := s.readDates(ctx, sheet, tab, &snap, t); err != nil {
 		return snapshot{}, err
-	}
-	if s.cacheTTL > 0 {
-		s.mu.Lock()
-		s.cache[k] = snap
-		s.mu.Unlock()
 	}
 	return snap, nil
 }
 
+// read returns the tab's values from the cache, or from Google when fresh is set or the cache has
+// none, caching what it reads unless fresh is set.
+func (s *Service) read(ctx context.Context, sheet, tab string, fresh bool) (*cachedTab, error) {
+	id := s.settings.Spreadsheets[sheet].ID
+	k := cacheKey(id, tab)
+	if !fresh {
+		if t, ok := s.cache.get(k); ok {
+			slog.DebugContext(ctx, "cache hit", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
+				slog.Int64(otelkeys.AgeMs, time.Since(t.at).Milliseconds()))
+			return t, nil
+		}
+		if s.cache.ttl > 0 {
+			slog.DebugContext(ctx, "cache miss", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
+		}
+	}
+	vals, err := s.store.Read(ctx, id, tab)
+	if err != nil {
+		return nil, err
+	}
+	t := &cachedTab{vals: vals, serials: map[int][]any{}, at: time.Now()}
+	if !fresh {
+		s.cache.put(k, t)
+	}
+	return t, nil
+}
+
 // readDates replaces the cells of snap's date and datetime columns that hold dates with ISO 8601
-// text. Sheets shows a date in the spreadsheet's locale, so they are read again as serial numbers.
-// Text in those columns stays as it is.
-func (s *Service) readDates(ctx context.Context, sheet, tab string, snap snapshot) error {
+// text, in a copy of the rows, since t may be shared. Sheets shows a date in the spreadsheet's
+// locale, so those columns are read again as serial numbers, which t keeps. Text in them stays as
+// it is.
+func (s *Service) readDates(ctx context.Context, sheet, tab string, snap *snapshot, t *cachedTab) error {
 	sr, ok := s.store.(store.SerialReader)
 	if !ok {
 		return nil
@@ -111,40 +121,53 @@ func (s *Service) readDates(ctx context.Context, sheet, tab string, snap snapsho
 	cols := s.columns(sheet, tab)
 	var idx []int
 	for i, h := range snap.header {
-		if t := cols[h].Type; t == "date" || t == "datetime" {
+		if typ := cols[h].Type; typ == "date" || typ == "datetime" {
 			idx = append(idx, i)
 		}
 	}
 	if len(idx) == 0 {
 		return nil
 	}
-	serials, err := sr.ReadSerial(ctx, s.settings.Spreadsheets[sheet].ID, tab, idx)
-	if err != nil {
-		return err
+	serials, missing := s.cache.serials(t, idx)
+	if len(missing) > 0 {
+		read, err := sr.ReadSerial(ctx, s.settings.Spreadsheets[sheet].ID, tab, missing)
+		if err != nil {
+			return err
+		}
+		got := map[int][]any{}
+		for k, c := range missing {
+			if k < len(read) {
+				got[c], serials[c] = read[k], read[k]
+			}
+		}
+		s.cache.addSerials(t, got)
 	}
-	for k, c := range idx {
-		for r, v := range serials[k] {
+	rows := make([][]any, len(snap.rows))
+	for i, r := range snap.rows {
+		rows[i] = slices.Clone(r)
+	}
+	for _, c := range idx {
+		for r, v := range serials[c] {
 			f, isNum := v.(float64)
-			if r == 0 || !isNum || r-1 >= len(snap.rows) || c >= len(snap.rows[r-1]) {
+			if r == 0 || !isNum || r-1 >= len(rows) || c >= len(rows[r-1]) {
 				continue // the header, text, or a cell the first read didn't have
 			}
-			snap.rows[r-1][c] = fromSerial(f, cols[snap.header[c]].Type == "datetime")
+			rows[r-1][c] = fromSerial(f, cols[snap.header[c]].Type == "datetime")
 		}
 	}
+	snap.rows = rows
 	return nil
 }
 
-// lockTab serializes writes to one tab and drops its cache entry once the write is done.
+// lockTab serializes writes to one tab, across every user who added its spreadsheet, and drops
+// the tab from the cache once the write is done.
 func (s *Service) lockTab(ctx context.Context, sheet, tab string) func() {
-	k := sheet + "/" + tab
-	m, _ := s.locks.LoadOrStore(k, &sync.Mutex{})
-	m.(*sync.Mutex).Lock()
+	k := cacheKey(s.settings.Spreadsheets[sheet].ID, tab)
+	m := s.cache.lock(k)
+	m.Lock()
 	return func() {
-		s.mu.Lock()
-		_, cached := s.cache[k]
-		delete(s.cache, k)
-		s.mu.Unlock()
-		m.(*sync.Mutex).Unlock()
+		cached := s.cache.drop(k)
+		m.Unlock()
 		if cached {
 			slog.DebugContext(ctx, "cache invalidate", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
 		}
