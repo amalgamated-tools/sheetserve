@@ -89,12 +89,49 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 		snap.rows = vals[1:]
 	}
 	snap.key = slices.Index(snap.header, s.keyColumn(sheet, tab))
+	if err := s.readDates(ctx, sheet, tab, snap); err != nil {
+		return snapshot{}, err
+	}
 	if s.cacheTTL > 0 {
 		s.mu.Lock()
 		s.cache[k] = snap
 		s.mu.Unlock()
 	}
 	return snap, nil
+}
+
+// readDates replaces the cells of snap's date and datetime columns that hold dates with ISO 8601
+// text. Sheets shows a date in the spreadsheet's locale, so they are read again as serial numbers.
+// Text in those columns stays as it is.
+func (s *Service) readDates(ctx context.Context, sheet, tab string, snap snapshot) error {
+	sr, ok := s.store.(store.SerialReader)
+	if !ok {
+		return nil
+	}
+	cols := s.columns(sheet, tab)
+	var idx []int
+	for i, h := range snap.header {
+		if t := cols[h].Type; t == "date" || t == "datetime" {
+			idx = append(idx, i)
+		}
+	}
+	if len(idx) == 0 {
+		return nil
+	}
+	serials, err := sr.ReadSerial(ctx, s.settings.Spreadsheets[sheet].ID, tab, idx)
+	if err != nil {
+		return err
+	}
+	for k, c := range idx {
+		for r, v := range serials[k] {
+			f, isNum := v.(float64)
+			if r == 0 || !isNum || r-1 >= len(snap.rows) || c >= len(snap.rows[r-1]) {
+				continue // the header, text, or a cell the first read didn't have
+			}
+			snap.rows[r-1][c] = fromSerial(f, cols[snap.header[c]].Type == "datetime")
+		}
+	}
+	return nil
 }
 
 // lockTab serializes writes to one tab and drops its cache entry once the write is done.
@@ -212,6 +249,7 @@ func FilterOperators() []string { return slices.Clone(filterOps) }
 
 type cond struct {
 	col int
+	typ string // the column's type
 	op  string
 	val string
 }
@@ -251,7 +289,11 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 		if err != nil {
 			return nil, err
 		}
-		conds = append(conds, cond{i, op, v})
+		typ := s.columns(sheet, tab)[name].Type
+		if v, err = filterValue(typ, k, op, v); err != nil {
+			return nil, err
+		}
+		conds = append(conds, cond{i, typ, op, v})
 	}
 	var matched [][]any
 	for _, row := range snap.rows {
@@ -298,6 +340,19 @@ func cell(row []any, i int) string {
 }
 
 func (c cond) match(v string) bool {
+	if c.typ != "" && v == "" && (c.op == "gt" || c.op == "gte" || c.op == "lt" || c.op == "lte") {
+		return false // an empty cell in a typed column has no value to compare
+	}
+	switch c.typ {
+	case "number", "integer":
+		if c.op == "eq" || c.op == "ne" { // 2 matches 2.0
+			x, errX := strconv.ParseFloat(v, 64)
+			y, _ := strconv.ParseFloat(c.val, 64)
+			return (errX == nil && x == y) == (c.op == "eq")
+		}
+	case "boolean":
+		v = strings.ToLower(v) // a checkbox reads as true, text as TRUE
+	}
 	switch c.op {
 	case "ne":
 		return v != c.val
@@ -386,9 +441,9 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 	if err := s.checkFields(snap, sheet, tab, fields, true); err != nil {
 		return nil, err
 	}
-	row := make([]any, len(snap.header))
+	row, cols := make([]any, len(snap.header)), s.columns(sheet, tab)
 	for i, h := range snap.header {
-		row[i] = cellValue(fields[h])
+		row[i] = cellValue(normalize(cols[h].Type, fields[h]))
 	}
 	if key := snap.header[snap.key]; key == "id" {
 		row[snap.key] = rand.Text()
@@ -402,7 +457,11 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 			return nil, err
 		}
 	}
-	if err := s.store.Append(ctx, s.settings.Spreadsheets[sheet].ID, tab, row); err != nil {
+	out := make([]any, len(row))
+	for i, h := range snap.header {
+		out[i] = toStore(cols[h].Type, row[i])
+	}
+	if err := s.store.Append(ctx, s.settings.Spreadsheets[sheet].ID, tab, out); err != nil {
 		return nil, err
 	}
 	return s.toObject(snap, row, sheet, tab), nil
@@ -431,10 +490,11 @@ func (s *Service) Update(ctx context.Context, sheet, tab, id string, fields map[
 	}
 	row := make([]any, len(snap.header))
 	copy(row, snap.rows[i])
-	cells := map[int]any{}
+	cells, cols := map[int]any{}, s.columns(sheet, tab)
 	for f, v := range fields {
 		c := slices.Index(snap.header, f)
-		cells[c], row[c] = cellValue(v), cellValue(v)
+		v = cellValue(normalize(cols[f].Type, v))
+		cells[c], row[c] = toStore(cols[f].Type, v), v
 	}
 	if err := s.store.SetCells(ctx, s.settings.Spreadsheets[sheet].ID, tab, i+2, cells); err != nil {
 		return nil, err

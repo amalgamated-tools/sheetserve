@@ -94,7 +94,7 @@ templ tabRow(sheet, f string, t tabView) {
 			if t.Typed > 0 {
 				· { fmt.Sprint(t.Typed) } typed
 			} else {
-				· untyped
+				· <a href={ templ.SafeURL(columnsURL(sheet)) }>untyped, set column types</a>
 			}
 			if t.Hidden > 0 {
 				· { fmt.Sprint(t.Hidden) } hidden

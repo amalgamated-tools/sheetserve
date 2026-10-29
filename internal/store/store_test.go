@@ -35,3 +35,25 @@ func TestLogCall(t *testing.T) {
 		t.Errorf("create record: %v", r)
 	}
 }
+
+// Every string goes in as text, so nothing a client sends becomes a formula, number or date.
+// Only a Date becomes a date cell.
+func TestUserEntered(t *testing.T) {
+	day := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ in, want any }{
+		{"=IMPORTXML(A1)", "'=IMPORTXML(A1)"},
+		{"2026-11-05", "'2026-11-05"},
+		{"007", "'007"},
+		{"'quoted", "''quoted"},
+		{"", ""},
+		{3.5, 3.5},
+		{true, true},
+		{nil, nil},
+		{Date{Time: day}, "2026-11-05"},
+		{Date{Time: time.Date(2026, 11, 5, 9, 30, 0, 0, time.FixedZone("", 2*60*60)), WithTime: true}, "2026-11-05 07:30:00"},
+	} {
+		if got := userEntered(c.in); got != c.want {
+			t.Errorf("userEntered(%#v) = %#v, want %#v", c.in, got, c.want)
+		}
+	}
+}

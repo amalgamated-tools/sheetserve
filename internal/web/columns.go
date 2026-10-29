@@ -116,6 +116,9 @@ func tabColumns(tab string, rule db.TabRule, header []string, rows [][]any) tabC
 				vals = append(vals, row[i])
 				if c.Sample == "" && row[i] != nil {
 					c.Sample = fmt.Sprint(row[i])
+					if _, isBool := row[i].(bool); isBool {
+						c.Sample = strings.ToUpper(c.Sample) // as Sheets shows it
+					}
 				}
 			}
 		}

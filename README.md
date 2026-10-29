@@ -13,7 +13,7 @@ The server keeps them in SQLite.
 - Every request is logged as JSON, with its status, duration, request ID and trace ID. API requests also log the key name and the reason for any refusal.
 - Sign-ins and dashboard changes, such as a new key or a tab rule, are logged as `audit` records that name the user.
 
-![The Spreadsheets page: each tab of the shop spreadsheet has its allowed ops, hidden columns and key column](docs/images/spreadsheets.jpg)
+![The Spreadsheets page: each tab of the shop spreadsheet has its allowed ops, its key column, and a link to set its column types](docs/images/spreadsheets.jpg)
 
 ## Setup
 
@@ -74,7 +74,10 @@ The first time, the page suggests a type for each column from the first 50 rows.
 - Reads return each value as its column's type. A blank cell reads as `null`, and a number stored as text reads as a number.
   A cell edited by hand to a value that doesn't fit, such as `n/a` in a Number column, comes back as it is.
 - The OpenAPI spec and the MCP tools give each column its type.
-- Dates are written as text, because writes use `RAW` input.
+- Date and Date and time values are written as date cells, and read back as ISO 8601 text whatever the spreadsheet's locale.
+  Times are stored in UTC, and a time typed into the sheet by hand is read as UTC.
+- Filters on a typed column must fit its type, so `points[gte]=lots` returns `400`. Numbers match by value (`2` matches `2.0`),
+  True/false ignores case, and `gt`, `gte`, `lt` and `lte` skip empty cells. `contains` takes any text.
 
 Every column is in the API unless you hide it. Under Advanced, you can hide columns. A hidden column is left out of responses, the OpenAPI spec and the MCP tools, and it can't be written or filtered on.
 
@@ -143,7 +146,7 @@ A successful create returns `201`. Errors use these status codes:
 
 Error bodies look like `{"error": "..."}`. Google API error details go to the log only.
 
-Writes use `RAW` input, so the server never runs client data as a formula. An update changes only the cells you send,
+Writes send every string as text, so the server never runs client data as a formula or reads it as a number or date. An update changes only the cells you send,
 so formulas in other columns stay in place.
 
 ## Browsers (CORS)

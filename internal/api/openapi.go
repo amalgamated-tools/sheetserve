@@ -61,13 +61,13 @@ func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 					if c == "limit" || c == "offset" || c == "sort" { // API.list reads these only as list options
 						continue
 					}
-					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": obj{"type": "string"}})
+					params = append(params, obj{"name": c, "in": "query", "description": "exact match", "schema": filterSchema(types[c], "eq")})
 					for _, filterOp := range service.FilterOperators() {
 						if slices.Contains(cols, c+"["+filterOp+"]") { // the exact column wins; see Service.List
 							continue
 						}
 						params = append(params, obj{"name": c + "[" + filterOp + "]", "in": "query",
-							"description": "filter using " + filterOp, "schema": obj{"type": "string"}})
+							"description": "filter using " + filterOp, "schema": filterSchema(types[c], filterOp)})
 					}
 				}
 				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
@@ -101,6 +101,16 @@ func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 		"paths":      paths,
 		"components": obj{"schemas": schemas, "securitySchemes": obj{"bearerAuth": obj{"type": "http", "scheme": "bearer"}}},
 	}
+}
+
+// filterSchema is the schema of a filter's value on a column of type c using op. contains matches
+// text, and a filter value is never null.
+func filterSchema(c db.Column, op string) obj {
+	if op == "contains" || c.Type == "" {
+		return obj{"type": "string"}
+	}
+	c.Required = true
+	return valueSchema(c)
 }
 
 func sortValues(cols []string) []any {

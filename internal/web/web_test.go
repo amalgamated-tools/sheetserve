@@ -480,6 +480,9 @@ func TestColumns(t *testing.T) {
 			t.Errorf("columns page lacks %s: %d %s", want, s, body)
 		}
 	}
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, `<a href="/sheets/columns?sheet=crm">untyped, set column types</a>`) {
+		t.Errorf("untyped tab has no link to its columns: %s", body)
+	}
 	if s, _ := get(t, alice, srv.URL+"/sheets/columns?sheet=nope", ""); s != 303 {
 		t.Errorf("unknown sheet: %d", s)
 	}
@@ -550,6 +553,7 @@ func TestColumns(t *testing.T) {
 	for _, want := range []string{
 		`"age":{"type":["integer","null"]}`, `"joined":{"format":"date","type":["string","null"]}`,
 		`"name":{"type":"string"}`, `"email":{"type":"string"}`, `"required":["email","name"]`,
+		`"name":"age[gte]","schema":{"type":"integer"}`, `"name":"name[contains]","schema":{"type":"string"}`,
 	} {
 		if !strings.Contains(spec, want) {
 			t.Errorf("spec lacks %s: %s", want, spec)
