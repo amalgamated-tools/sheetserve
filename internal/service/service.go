@@ -128,6 +128,13 @@ func (s *Service) Header(ctx context.Context, sheet, tab string) ([]string, erro
 	return snap.header, err
 }
 
+// Peek reads the tab fresh from Google and returns its header row and up to n rows under it,
+// hidden columns included, for the dashboard to show its owner.
+func (s *Service) Peek(ctx context.Context, sheet, tab string, n int) ([]string, [][]any, error) {
+	snap, err := s.load(ctx, sheet, tab, true)
+	return snap.header, snap.rows[:min(n, len(snap.rows))], err
+}
+
 // Key returns the tab's key column, or "" when its header lacks one and the tab can only be listed.
 func (s *Service) Key(ctx context.Context, sheet, tab string) (string, error) {
 	snap, err := s.load(ctx, sheet, tab, false)
@@ -153,8 +160,12 @@ func (s *Service) VisibleColumns(ctx context.Context, sheet, tab string) ([]stri
 	return s.visibleColumns(snap, sheet, tab), nil
 }
 
+func (s *Service) columns(sheet, tab string) map[string]db.Column {
+	return s.settings.Spreadsheets[sheet].Tabs[tab].Columns
+}
+
 func (s *Service) toObject(snap snapshot, row []any, sheet, tab string) map[string]any {
-	hidden := s.hidden(sheet, tab)
+	hidden, cols := s.hidden(sheet, tab), s.columns(sheet, tab)
 	m := map[string]any{}
 	for i, h := range snap.header {
 		if h == "" || slices.Contains(hidden, h) {
@@ -164,7 +175,7 @@ func (s *Service) toObject(snap snapshot, row []any, sheet, tab string) map[stri
 		if i < len(row) {
 			v = row[i]
 		}
-		m[h] = v
+		m[h] = readValue(cols[h].Type, v)
 	}
 	return m
 }
@@ -333,10 +344,12 @@ func (s *Service) Get(ctx context.Context, sheet, tab, id string) (map[string]an
 }
 
 // checkFields rejects writes to unknown or hidden columns, and to the key column unless creating
-// a row on a tab whose key isn't "id". The server assigns ids, and a row's key never changes.
+// a row on a tab whose key isn't "id". The server assigns ids, and a row's key never changes. It
+// also checks each value against its column's type, and that a new row fills every required column.
 func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[string]any, creating bool) error {
 	visible := s.visibleColumns(snap, sheet, tab)
 	key := snap.header[snap.key]
+	cols := s.columns(sheet, tab)
 	for _, f := range slices.Sorted(maps.Keys(fields)) {
 		switch {
 		case f == key && key == "id":
@@ -346,6 +359,16 @@ func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[strin
 		}
 		if !slices.Contains(visible, f) {
 			return BadRequest("unknown column %q", f)
+		}
+		if err := checkValue(f, cols[f], fields[f]); err != nil {
+			return err
+		}
+	}
+	if creating {
+		for _, c := range visible {
+			if _, sent := fields[c]; !sent && cols[c].Required && (c != key || key != "id") {
+				return BadRequest("%s is required", c)
+			}
 		}
 	}
 	return nil

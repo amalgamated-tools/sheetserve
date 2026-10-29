@@ -45,16 +45,19 @@ templ sheetCard(sh sheetView) {
 	<section class="card" id={ "sheet-" + sh.Name }>
 		<div class="card-head">
 			<div><h3>{ sh.Name }</h3> <small><a href={ templ.URL("https://docs.google.com/spreadsheets/d/" + url.PathEscape(sh.GoogleID) + "/edit") } target="_blank" rel="noopener" title="Open in Google Sheets">{ sh.Title } ↗</a></small></div>
-			<form class="inline" method="post" action="/app/sheets/delete" data-confirm={ "Remove " + sh.Name + "? Keys scoped to it stop working." }>
-				<input type="hidden" name="name" value={ sh.Name }/>
-				<button class="danger small">Remove</button>
-			</form>
+			<div>
+				<a class="button small" href={ templ.SafeURL(columnsURL(sh.Name)) }>Columns</a>
+				<form class="inline" method="post" action="/app/sheets/delete" data-confirm={ "Remove " + sh.Name + "? Keys scoped to it stop working." }>
+					<input type="hidden" name="name" value={ sh.Name }/>
+					<button class="danger small">Remove</button>
+				</form>
+			</div>
 		</div>
-		<p class="hint">Endpoint: <code><span class="origin"></span>/v1/{ sh.Name }/&lt;tab&gt;</code>. Row 1 of each tab is its header. A tab's key column (<code>id</code> unless you pick another) finds single rows; a tab without one can only be listed.</p>
+		<p class="hint">Endpoint: <code><span class="origin"></span>/v1/{ sh.Name }/&lt;tab&gt;</code>. Row 1 of each tab is its header. Set each column's type and the tab's key column under Columns.</p>
 		if len(sh.Tabs) > 0 {
 			<div class="table-wrap">
 				<table>
-					<tr><th>Tab</th><th>Allowed ops</th><th>Hidden columns</th><th>Key column</th><th></th></tr>
+					<tr><th>Tab</th><th>Allowed ops</th><th>Columns</th><th></th></tr>
 					for i, t := range sh.Tabs {
 						@tabRow(sh.Name, fmt.Sprintf("tab-%s-%d", sh.Name, i), t)
 					}
@@ -86,8 +89,17 @@ templ tabRow(sheet, f string, t tabView) {
 				</div>
 			</div>
 		</td>
-		<td><input form={ f } name="hidden" value={ t.Hidden } placeholder="cost, notes" aria-label={ "Hidden columns for " + t.Name }/></td>
-		<td><input form={ f } name="key" value={ t.Key } placeholder="id" size="8" aria-label={ "Key column for " + t.Name }/></td>
+		<td class="muted">
+			key <code>{ t.Key }</code>
+			if t.Typed > 0 {
+				· { fmt.Sprint(t.Typed) } typed
+			} else {
+				· untyped
+			}
+			if t.Hidden > 0 {
+				· { fmt.Sprint(t.Hidden) } hidden
+			}
+		</td>
 		<td class="right">
 			<form id={ f } class="tab-form" method="post" action="/app/tabs">
 				<input type="hidden" name="sheet" value={ sheet }/>

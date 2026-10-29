@@ -91,25 +91,63 @@ type idArgs struct {
 	ID string `json:"id"`
 }
 
-// writeFields returns the input schemas for creating and updating a row of a tab keyed by rowKey.
-// The server assigns ids, so an "id" key is never sent; any other key is required on create and
-// can't be changed by an update.
-func writeFields(rowKey string, cols []string) (create, update map[string]any) {
+// writeFields returns the input schemas for creating and updating a row of a tab keyed by rowKey,
+// with the column types from columnTypes. The server assigns ids, so an "id" key is never sent;
+// any other key is required on create and can't be changed by an update.
+func writeFields(rowKey string, cols []string, types map[string]db.Column) (create, update map[string]any) {
 	createCols, updateCols := map[string]any{}, map[string]any{}
+	var required []string
 	for _, c := range cols {
 		if c != rowKey || rowKey != "id" {
-			createCols[c] = map[string]any{}
+			createCols[c] = valueSchema(types[c])
+			if types[c].Required {
+				required = append(required, c)
+			}
 		}
 		if c != rowKey {
-			updateCols[c] = map[string]any{}
+			updateCols[c] = valueSchema(types[c])
 		}
 	}
-	create, update = object(createCols), object(updateCols)
-	if rowKey != "id" {
-		create["required"] = []string{rowKey}
-	}
+	create, update = object(createCols, required...), object(updateCols)
 	create["additionalProperties"], update["additionalProperties"] = false, false
 	return create, update
+}
+
+// columnTypes returns the types of sheet/tab's columns by name, with its key column rowKey marked
+// required, since every row has one.
+func (a *API) columnTypes(sheet, tab, rowKey string) map[string]db.Column {
+	types := maps.Clone(a.settings.Spreadsheets[sheet].Tabs[tab].Columns)
+	if types == nil {
+		types = map[string]db.Column{}
+	}
+	if rowKey != "" {
+		k := types[rowKey]
+		k.Required = true
+		types[rowKey] = k
+	}
+	return types
+}
+
+// valueSchema is the JSON schema of a value in a column of type c. A typed column that isn't
+// required can be empty, which reads as null. An untyped column can hold anything.
+func valueSchema(c db.Column) map[string]any {
+	typ, format := c.Type, ""
+	switch c.Type {
+	case "":
+		return map[string]any{}
+	case "date":
+		typ, format = "string", "date"
+	case "datetime":
+		typ, format = "string", "date-time"
+	}
+	s := map[string]any{"type": typ}
+	if !c.Required {
+		s["type"] = []any{typ, "null"}
+	}
+	if format != "" {
+		s["format"] = format
+	}
+	return s
 }
 
 // createNote tells a client who sets a new row's key.
@@ -122,7 +160,7 @@ func createNote(rowKey string) string {
 
 func (a *API) addTabTools(srv *mcp.Server, key *db.Key, name, sheet, tab, rowKey string, ops, cols []string) {
 	where := sheet + "/" + tab
-	createFields, updateFields := writeFields(rowKey, cols)
+	createFields, updateFields := writeFields(rowKey, cols, a.columnTypes(sheet, tab, rowKey))
 	idSchema := object(map[string]any{"id": map[string]any{"type": "string", "description": "the row's " + rowKey}}, "id")
 
 	for _, op := range ops {

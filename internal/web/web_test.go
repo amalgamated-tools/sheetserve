@@ -308,7 +308,7 @@ func TestDashboardPages(t *testing.T) {
 	if s, body := get(t, alice, srv.URL+"/keys", ""); s != 200 || !strings.Contains(body, "Add a spreadsheet</a> first") {
 		t.Errorf("keys page with no sheets: %d", s)
 	}
-	if s, loc := location("POST", "/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 || loc != "/sheets#sheet-shop" {
+	if s, loc := location("POST", "/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 || loc != "/sheets/columns?sheet=shop" {
 		t.Errorf("add sheet: %d %q", s, loc)
 	}
 	if s, loc := location("POST", "/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 || loc != "/sheets#sheet-shop" {
@@ -368,7 +368,7 @@ func TestCreateSheet(t *testing.T) {
 	if got := fs.tabs["new-shop/Products"]; len(got) == 0 || !slices.Equal(got[0], []any{"sku", "name"}) {
 		t.Errorf("Products header: %v", got)
 	}
-	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, `value="sku"`) {
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, `key <code>sku</code>`) {
 		t.Errorf("Products key column not shown as sku: %s", body)
 	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}); s != 303 {
@@ -430,36 +430,137 @@ func TestParseSchema(t *testing.T) {
 	}
 }
 
-// A tab's key column is checked against its header when saved; left blank, it's id.
-func TestSaveTabKey(t *testing.T) {
-	fs := &fakeStore{tabs: map[string][][]any{"SS/People": {{"email", "name"}, {"ann@example.com", "Ann"}}}}
+// Adding a spreadsheet leads to its columns page, which suggests types from each tab's rows. Saved
+// types, the key column and hidden columns then shape what the API accepts and returns.
+func TestColumns(t *testing.T) {
+	fs := &fakeStore{tabs: map[string][][]any{
+		"SS/People": {{"email", "name", "age", "vip", "joined", "notes"}, {"ann@example.com", "Ann", 41.0, true, "2024-05-01", ""}},
+		"SS/Blank":  {},
+	}}
 	dash, srv := newTestDashboard(t, fs)
 	alice := signInAs(t, dash, srv, "alice")
 	if s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"crm"}, "google_id": {"SS"}, "title": {"CRM"}}); s != 303 {
 		t.Fatalf("add sheet: %d %s", s, body)
 	}
-	save := func(key string) (int, string) {
-		return post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"crm"}, "tab": {"People"}, "ops": {"read"}, "key": {key}})
+	s, body := get(t, alice, srv.URL+"/sheets/columns?sheet=crm", "")
+	for _, want := range []string{
+		"<title>Columns of crm · sheetserve</title>", "Types suggested from its rows", "Row 1 is empty",
+		`<input type="hidden" name="t1" value="People">`,
+		// email and name are text, age a whole number, vip a checkbox, joined an ISO date; notes is blank.
+		`name="t1c0type" aria-label="Type of email"><option value="">Any</option><option value="string" selected>`,
+		`name="t1c2type" aria-label="Type of age"><option value="">Any</option><option value="string">Text</option><option value="number">Number</option><option value="integer" selected>`,
+		`<option value="boolean" selected>True/false</option>`, `<option value="date" selected>Date</option>`,
+		`name="t1c5type" aria-label="Type of notes"><option value="" selected>Any</option>`,
+		// People has no id column, so it starts with no key.
+		`Row 1 has no <code>id</code> column`, `<input type="radio" name="t1key" value="" checked>`,
+	} {
+		if s != 200 || !strings.Contains(body, want) {
+			t.Errorf("columns page lacks %s: %d %s", want, s, body)
+		}
 	}
-	if s, body := save("nope"); s != 400 || !strings.Contains(body, `crm/People has no &#34;nope&#34; column in row 1`) {
-		t.Errorf("unknown key: %d %s", s, body)
+	if s, _ := get(t, alice, srv.URL+"/sheets/columns?sheet=nope", ""); s != 303 {
+		t.Errorf("unknown sheet: %d", s)
 	}
-	if s, body := save(" email "); s != 303 {
-		t.Fatalf("save key: %d %s", s, body)
+
+	people := url.Values{"sheet": {"crm"}, "t0": {"People"}, "t0key": {"email"},
+		"t0c0": {"email"}, "t0c0type": {"string"}, "t0c1": {"name"}, "t0c1type": {"string"}, "t0c1required": {"1"},
+		"t0c2": {"age"}, "t0c2type": {"integer"}, "t0c3": {"vip"}, "t0c3type": {"boolean"},
+		"t0c4": {"joined"}, "t0c4type": {"date"}, "t0c5": {"notes"}, "t0c5hidden": {"1"}}
+	bad := url.Values{}
+	maps.Copy(bad, people)
+	bad.Set("t0key", "nope")
+	if s, body := post(t, alice, srv.URL+"/app/sheets/columns", bad); s != 400 || !strings.Contains(body, "not one of its columns") {
+		t.Errorf("unknown key column: %d %s", s, body)
 	}
-	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"crm/People"}})
+	bad.Set("t0key", "notes")
+	if s, body := post(t, alice, srv.URL+"/app/sheets/columns", bad); s != 400 || !strings.Contains(body, "can&#39;t be hidden") {
+		t.Errorf("hidden key column: %d %s", s, body)
+	}
+	if s, body := post(t, alice, srv.URL+"/app/sheets/columns", people); s != 303 {
+		t.Fatalf("save columns: %d %s", s, body)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "key <code>email</code> · 5 typed · 1 hidden") {
+		t.Errorf("sheets page summary: %s", body)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets/columns?sheet=crm", ""); strings.Contains(body, "Types suggested") ||
+		!strings.Contains(body, `name="t1c1required" value="1" checked`) || !strings.Contains(body, `name="t1c5hidden" value="1" checked`) {
+		t.Errorf("columns page after save: %s", body)
+	}
+
+	post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"crm"}, "tab": {"People"}, "ops": {"read", "create", "update"}})
+	_, body = post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"crm/People"}})
 	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
-	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 200 || !strings.Contains(body, `"Ann"`) {
+	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 200 ||
+		body != `{"age":41,"email":"ann@example.com","joined":"2024-05-01","name":"Ann","vip":true}`+"\n" {
 		t.Errorf("get by email: %d %s", s, body)
 	}
-	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `name="key" value="email"`) {
-		t.Errorf("dashboard key: %d", s)
+	write := func(method, path, body string) (int, string) {
+		req := newRequest(t, method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		return send(t, browser(t), req)
 	}
-	if s, body := save(""); s != 303 {
-		t.Fatalf("clear key: %d %s", s, body)
+	for body, want := range map[string]string{
+		`{"email":"bo@example.com","name":"Bo","age":"forty"}`:  `age must be an integer, got \"forty\"`,
+		`{"email":"bo@example.com","name":"Bo","age":4.5}`:      `age must be an integer, got 4.5`,
+		`{"email":"bo@example.com","name":"Bo","vip":"yes"}`:    `vip must be true or false`,
+		`{"email":"bo@example.com","name":"Bo","joined":"5/1"}`: `joined must be a date like 2026-01-31`,
+		`{"email":"bo@example.com","name":"Bo","age":""}`:       `age must be an integer, or null to empty it`,
+		`{"email":"bo@example.com","name":7}`:                   `name must be a string, got 7`,
+		`{"email":"bo@example.com","age":3}`:                    `name is required`,
+		`{"email":"bo@example.com","name":"Bo","notes":"x"}`:    `unknown column \"notes\"`,
+	} {
+		if s, got := write("POST", "/v1/crm/People", body); s != 400 || !strings.Contains(got, want) {
+			t.Errorf("create %s: %d %s, want %s", body, s, got, want)
+		}
 	}
-	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 403 || !strings.Contains(body, "can only be listed") {
-		t.Errorf("get without id column: %d %s", s, body)
+	if s, got := write("POST", "/v1/crm/People", `{"email":"bo@example.com","name":"Bo","age":30,"vip":false,"joined":null}`); s != 201 ||
+		got != `{"age":30,"email":"bo@example.com","joined":null,"name":"Bo","vip":false}`+"\n" {
+		t.Errorf("create: %d %s", s, got)
+	}
+	if s, got := write("PATCH", "/v1/crm/People/bo@example.com", `{"name":null}`); s != 400 || !strings.Contains(got, "name is required") {
+		t.Errorf("empty a required column: %d %s", s, got)
+	}
+	if s, got := write("PATCH", "/v1/crm/People/bo@example.com", `{"age":null}`); s != 200 || !strings.Contains(got, `"age":null`) {
+		t.Errorf("empty a column: %d %s", s, got)
+	}
+
+	_, spec := get(t, browser(t), srv.URL+"/openapi.json", key)
+	for _, want := range []string{
+		`"age":{"type":["integer","null"]}`, `"joined":{"format":"date","type":["string","null"]}`,
+		`"name":{"type":"string"}`, `"email":{"type":"string"}`, `"required":["email","name"]`,
+	} {
+		if !strings.Contains(spec, want) {
+			t.Errorf("spec lacks %s: %s", want, spec)
+		}
+	}
+	if strings.Contains(spec, "notes") {
+		t.Errorf("spec shows the hidden notes column")
+	}
+}
+
+func TestGuessType(t *testing.T) {
+	for _, c := range []struct {
+		vals []any
+		want string
+	}{
+		{nil, ""},
+		{[]any{"", nil}, ""},
+		{[]any{1.0, 2.0, ""}, "integer"},
+		{[]any{1.0, 2.5}, "number"},
+		{[]any{true, false}, "boolean"},
+		{[]any{"2026-01-31", "2025-12-01"}, "date"},
+		{[]any{"2026-01-31T09:30:00Z"}, "datetime"},
+		{[]any{"2026-01-31", "soon"}, "string"},
+		{[]any{1.0, "one"}, "string"},
+		{[]any{"14", 2.0, "-3"}, "integer"}, // numbers stored as text
+		{[]any{"14", "2.5"}, "number"},
+		{[]any{"0.5"}, "number"},
+		{[]any{"02139", "10001"}, "string"}, // ZIP codes keep their zeros
+		{[]any{"0", "7"}, "integer"},
+	} {
+		if got := guessType(c.vals); got != c.want {
+			t.Errorf("guessType(%v) = %q, want %q", c.vals, got, c.want)
+		}
 	}
 }
 
@@ -550,7 +651,9 @@ func TestAuditLog(t *testing.T) {
 		form url.Values
 	}{
 		{"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}},
-		{"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}, "hidden": {"item"}}},
+		{"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}},
+		{"/app/sheets/columns", url.Values{"sheet": {"shop"}, "t0": {"Orders"}, "t0key": {"id"},
+			"t0c0": {"id"}, "t0c0type": {"string"}, "t0c1": {"item"}, "t0c1type": {"string"}, "t0c1required": {"1"}, "t0c1hidden": {"1"}}},
 		{"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}, "ops": {"read"}}},
 		{"/app/keys/delete", url.Values{"name": {"web"}}},
 		{"/app/sheets/delete", url.Values{"name": {"shop"}}},
@@ -572,15 +675,18 @@ func TestAuditLog(t *testing.T) {
 		}
 		actions = append(actions, rec["action"].(string))
 	}
-	want := []string{"sheet.create", "tab.save", "key.create", "key.delete", "sheet.delete", "user.set_role", "user.delete"}
+	want := []string{"sheet.create", "tab.save", "tab.columns", "key.create", "key.delete", "sheet.delete", "user.set_role", "user.delete"}
 	if !slices.Equal(actions, want) {
 		t.Errorf("audit actions: %v, want %v", actions, want)
 	}
-	if recs := logs("audit"); len(recs) > 2 {
-		if tab := recs[1]; tab["sheet"] != "shop" || tab["tab"] != "Orders" || tab["ops"] != "read,create" || tab["hidden"] != "item" || tab["key_column"] != "id" {
+	if recs := logs("audit"); len(recs) > 3 {
+		if tab := recs[1]; tab["sheet"] != "shop" || tab["tab"] != "Orders" || tab["ops"] != "read,create" {
 			t.Errorf("tab.save record: %v", tab)
 		}
-		if key := recs[2]; key["key_name"] != "web" || key["tabs"] != "shop/Orders" || key["ops"] != "read" {
+		if tab := recs[2]; tab["tab"] != "Orders" || tab["hidden"] != "item" || tab["key_column"] != "id" || tab["columns"] != "id:string,item:string!" {
+			t.Errorf("tab.columns record: %v", tab)
+		}
+		if key := recs[3]; key["key_name"] != "web" || key["tabs"] != "shop/Orders" || key["ops"] != "read" {
 			t.Errorf("key.create record: %v", key)
 		}
 	}

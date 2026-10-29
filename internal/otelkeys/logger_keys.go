@@ -11,6 +11,7 @@ package otelkeys
 const (
 	Action              string = "action"
 	AgeMs               string = "age_ms"
+	Columns             string = "columns"
 	Component           string = "component"
 	DurationMs          string = "duration_ms"
 	Environment         string = "environment"

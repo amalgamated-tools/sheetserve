@@ -583,3 +583,72 @@ func TestCacheLogs(t *testing.T) {
 		t.Errorf("cache invalidations: %d, want 1", got)
 	}
 }
+
+// Column types shape the MCP tool schemas, and MCP arguments, whose numbers decode as float64, are
+// checked against them like REST bodies.
+func TestTypedColumnsMCP(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+			"Orders": {Ops: db.AllOps, Columns: map[string]db.Column{
+				"id": {Type: "string"}, "item": {Type: "string", Required: true}, "qty": {Type: "integer"}, "due": {Type: "date"},
+			}},
+		}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "item", "qty", "due", "note"}}}}
+	h := New(cfg, service.New(cfg, store, 0)).Mux()
+
+	_, body := call(t, h, "POST", "/mcp", "admin-key", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	var list struct {
+		Result struct {
+			Tools []struct {
+				Name        string
+				InputSchema struct {
+					Properties map[string]any `json:"properties"`
+					Required   []string       `json:"required"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("tools/list: %v: %s", err, body)
+	}
+	var create *struct {
+		Properties map[string]any `json:"properties"`
+		Required   []string       `json:"required"`
+	}
+	for i, tool := range list.Result.Tools {
+		if tool.Name == "shop_Orders_create" {
+			create = &list.Result.Tools[i].InputSchema
+		}
+	}
+	if create == nil {
+		t.Fatalf("no create tool: %s", body)
+	}
+	got, _ := json.Marshal(create.Properties)
+	if want := `{"due":{"format":"date","type":["string","null"]},"item":{"type":"string"},"note":{},"qty":{"type":["integer","null"]}}`; string(got) != want {
+		t.Errorf("create properties: %s, want %s", got, want)
+	}
+	if !slices.Equal(create.Required, []string{"item"}) {
+		t.Errorf("create requires %v, want [item]", create.Required)
+	}
+
+	for args, want := range map[string]string{
+		`{"item":"tea","qty":2.5}`: `qty must be an integer, got 2.5`,
+		`{"qty":2}`:                `item is required`,
+	} {
+		_, body = call(t, h, "POST", "/mcp", "admin-key",
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"shop_Orders_create","arguments":`+args+`}}`)
+		if !strings.Contains(body, `"isError":true`) || !strings.Contains(body, want) {
+			t.Errorf("create %s: %s, want %s", args, body, want)
+		}
+	}
+	_, body = call(t, h, "POST", "/mcp", "admin-key",
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"shop_Orders_create","arguments":{"item":"tea","qty":2,"due":"2026-02-01"}}}`)
+	if strings.Contains(body, `"isError":true`) || !strings.Contains(body, `\"qty\":2`) {
+		t.Errorf("create via mcp: %s", body)
+	}
+}
