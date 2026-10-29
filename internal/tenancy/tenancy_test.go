@@ -10,7 +10,8 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
-// A rebuilt tenant shares tab write locks with the one it replaced, which may still be serving requests.
+// A rebuilt tenant shares the cache and tab write locks with the one it replaced, which may still be
+// serving requests.
 func TestRebuildKeepsLocks(t *testing.T) {
 	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
 	if err != nil {
@@ -33,7 +34,7 @@ func TestRebuildKeepsLocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if old == fresh || !old.SharesLocks(fresh) {
-		t.Fatal("rebuilt tenant has its own tab locks")
+	if old == fresh || !old.SharesCache(fresh) {
+		t.Fatal("rebuilt tenant has its own cache and tab locks")
 	}
 }

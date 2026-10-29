@@ -25,7 +25,7 @@ type Tenants struct {
 
 	mu      sync.Mutex
 	tenants map[int64]*tenant
-	locks   map[int64]*sync.Map // per-user tab write locks; outlive tenant rebuilds
+	cache   *service.Cache // every user's tabs and tab locks; outlives tenant rebuilds
 }
 
 type tenant struct {
@@ -66,6 +66,7 @@ func (ts *Tenants) Service(ctx context.Context, userID int64) (*service.Service,
 }
 
 // Invalidate drops userID's cached API so the next request sees their latest settings and token.
+// Tabs already read stay cached.
 func (ts *Tenants) Invalidate(userID int64) {
 	ts.mu.Lock()
 	delete(ts.tenants, userID)
@@ -80,7 +81,7 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 		return t, nil
 	}
 	if ts.tenants == nil {
-		ts.tenants, ts.locks = map[int64]*tenant{}, map[int64]*sync.Map{}
+		ts.tenants, ts.cache = map[int64]*tenant{}, service.NewCache(ts.Global.CacheTTL)
 	}
 	settings, err := ts.DB.UserSettings(ctx, userID)
 	if err != nil {
@@ -91,11 +92,9 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 		st = errStore{err} // each call fails until the user signs in again
 	}
 	svc := service.New(settings, st, ts.Global.CacheTTL)
-	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them.
-	if ts.locks[userID] == nil {
-		ts.locks[userID] = &sync.Map{}
-	}
-	svc.UseLocks(ts.locks[userID])
+	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them,
+	// and keeps the tabs already read.
+	svc.UseCache(ts.cache, userID)
 	t := &tenant{api.New(settings, svc), svc}
 	ts.tenants[userID] = t
 	return t, nil

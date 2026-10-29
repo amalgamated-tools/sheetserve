@@ -27,10 +27,16 @@ type serialStore struct {
 	rows    [][]any
 	serials map[int][]any // by column, from row 1
 	written [][]any
+	reads   int // Read and ReadSerial calls
 }
 
-func (f *serialStore) Read(context.Context, string, string) ([][]any, error) { return f.rows, nil }
+func (f *serialStore) Read(context.Context, string, string) ([][]any, error) {
+	f.reads++
+	return f.rows, nil
+}
+
 func (f *serialStore) ReadSerial(_ context.Context, _, _ string, cols []int) ([][]any, error) {
+	f.reads++
 	var out [][]any
 	for _, c := range cols {
 		out = append(out, f.serials[c])
@@ -251,5 +257,89 @@ func TestLocateRowThatMoved(t *testing.T) {
 	st = newStore(0)
 	if _, err := New(cfg, st, 0).Update(ctx, "shop", "Orders", "b", map[string]any{"nope": 1}); err == nil || st.reads != 0 {
 		t.Errorf("bad field: %v, %d reads", err, st.reads)
+	}
+}
+
+// Users who added the same spreadsheet, under different names and settings, share its cached tabs:
+// each applies its own settings to the shared values without changing them, and a write by one
+// drops the tab for both. A user reads the shared tab only while their own last read from Google is
+// within the TTL, however recently someone else refreshed it.
+func TestSharedCache(t *testing.T) {
+	tasks := func(name string, rule db.TabRule) *db.Settings {
+		cfg := &db.Settings{Spreadsheets: map[string]db.SheetRule{name: {ID: "SS", Tabs: map[string]db.TabRule{"Tasks": rule}}}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	st := &serialStore{
+		rows:    [][]any{{"id", "due", "note"}, {"a", "11/5/2026", "hi"}},
+		serials: map[int][]any{1: {"due", 46331.0}},
+	}
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cache := NewCache(time.Minute)
+	cache.now = func() time.Time { return clock }
+	alice := New(tasks("work", db.TabRule{Ops: db.AllOps, Columns: map[string]db.Column{"due": {Type: "date"}}}), st, 0)
+	bob := New(tasks("team", db.TabRule{Ops: db.AllOps, Hidden: []string{"note"}}), st, 0)
+	alice.UseCache(cache, 1)
+	bob.UseCache(cache, 2)
+	ctx := context.Background()
+	list := func(svc *Service, sheet string) []map[string]any {
+		t.Helper()
+		rows, _, err := svc.List(ctx, sheet, "Tasks", nil, "", 0, 0)
+		if err != nil || len(rows) == 0 {
+			t.Fatalf("list %s: %v %v", sheet, rows, err)
+		}
+		return rows
+	}
+
+	// Bob reads the tab first, untyped, then Alice, who needs its dates: the cached values have no
+	// serials, so she reads both again together.
+	if b := list(bob, "team"); b[0]["due"] != "11/5/2026" || b[0]["note"] != nil || st.reads != 1 {
+		t.Fatalf("bob: %v, %d reads", b, st.reads)
+	}
+	if a := list(alice, "work"); a[0]["due"] != "2026-11-05" || a[0]["note"] != "hi" || st.reads != 3 {
+		t.Fatalf("alice: %v, %d reads, want 3", a, st.reads)
+	}
+	if st.rows[1][1] != "11/5/2026" {
+		t.Errorf("cached values changed: %v", st.rows[1])
+	}
+	// Both have read from Google within the TTL, so both hit the cache.
+	if a, b := list(alice, "work"), list(bob, "team"); a[0]["due"] != "2026-11-05" || b[0]["due"] != "11/5/2026" || st.reads != 3 {
+		t.Errorf("cache hits: %v %v, %d reads", a, b, st.reads)
+	}
+
+	// Alice keeps the shared tab fresh, but Bob's own read has expired, so he must read again.
+	clock = clock.Add(45 * time.Second)
+	cache.drop(cacheKey("SS", "Tasks"))
+	list(alice, "work")
+	reads := st.reads
+	clock = clock.Add(30 * time.Second)
+	if list(bob, "team"); st.reads != reads+1 {
+		t.Errorf("bob read the tab Alice refreshed without reading Google: %d reads, want %d", st.reads, reads+1)
+	}
+
+	if _, err := alice.Create(ctx, "work", "Tasks", map[string]any{"note": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	reads = st.reads
+	if list(bob, "team"); st.reads != reads+1 {
+		t.Errorf("bob after alice's write: %d reads, want %d", st.reads, reads+1)
+	}
+	if alice.cache.lock(cacheKey("SS", "Tasks")) != bob.cache.lock(cacheKey("SS", "Tasks")) {
+		t.Error("alice and bob have their own lock for the same tab")
+	}
+}
+
+// Expired tabs and reads are dropped, even ones no one asks for again.
+func TestCacheSweep(t *testing.T) {
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := NewCache(time.Minute)
+	c.now = func() time.Time { return clock }
+	c.put(1, "SS/Old", &cachedTab{at: clock})
+	clock = clock.Add(2 * time.Minute)
+	c.put(1, "SS/New", &cachedTab{at: clock})
+	if _, ok := c.tabs["SS/Old"]; ok || len(c.tabs) != 1 || len(c.verified) != 1 {
+		t.Errorf("after sweep: %v %v", c.tabs, c.verified)
 	}
 }
