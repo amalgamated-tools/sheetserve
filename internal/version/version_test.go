@@ -40,3 +40,16 @@ func TestStartedAndUptime(t *testing.T) {
 	require.Positive(t, first)
 	require.GreaterOrEqual(t, Uptime(), first, "uptime must not go backwards")
 }
+
+func TestCommitOr(t *testing.T) {
+	for _, c := range []struct{ commit, sha, want string }{
+		{"unknown", "", "unknown"},
+		{"unknown", "0123456789abcdef", "0123456"},
+		{"unknown", "abc", "abc"},
+		{"fedcba9", "0123456789abcdef", "fedcba9"}, // set at build time
+	} {
+		if got := commitOr(c.commit, c.sha); got != c.want {
+			t.Errorf("commitOr(%q, %q) = %q, want %q", c.commit, c.sha, got, c.want)
+		}
+	}
+}

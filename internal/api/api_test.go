@@ -405,7 +405,8 @@ func TestCORS(t *testing.T) {
 		!strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
 		t.Errorf("preflight: %d %v", rec.Code, rec.Header())
 	}
-	if rec := req("GET", "https://app.example"); rec.Code != 401 || rec.Header().Get("Access-Control-Allow-Origin") == "" {
+	if rec := req("GET", "https://app.example"); rec.Code != 401 || rec.Header().Get("Access-Control-Allow-Origin") == "" ||
+		rec.Header().Get("Access-Control-Expose-Headers") != "X-Total-Count" {
 		t.Errorf("actual request should carry CORS headers: %d %v", rec.Code, rec.Header())
 	}
 	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" ||
@@ -681,5 +682,39 @@ func TestEnumAndDefaultSchemas(t *testing.T) {
 		if !strings.Contains(spec, want) {
 			t.Errorf("spec lacks %s: %s", want, spec)
 		}
+	}
+}
+
+// A list sends how many rows matched its filters, before limit and offset, as X-Total-Count.
+func TestTotalCount(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{"Orders": {Ops: []string{"read"}}}}},
+		Keys:         []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "item"}, {"a", "tea"}, {"b", "mug"}, {"c", "tea"}, {"d", "tea"}}}}
+	h := New(cfg, service.New(cfg, store, 0)).Mux()
+	for path, want := range map[string]struct {
+		total string
+		rows  int
+	}{
+		"/v1/shop/Orders":                           {"4", 4},
+		"/v1/shop/Orders?limit=2":                   {"4", 2},
+		"/v1/shop/Orders?item=tea&limit=1&offset=1": {"3", 1},
+		"/v1/shop/Orders?item=tea&offset=9":         {"3", 0},
+	} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer admin-key")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var rows []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil || rec.Header().Get("X-Total-Count") != want.total || len(rows) != want.rows {
+			t.Errorf("%s: total %q, %d rows (%v), want %s and %d", path, rec.Header().Get("X-Total-Count"), len(rows), err, want.total, want.rows)
+		}
+	}
+	if _, spec := call(t, h, "GET", "/openapi.json", "admin-key", ""); !strings.Contains(spec, `"headers":{"X-Total-Count":`) {
+		t.Errorf("spec has no X-Total-Count: %s", spec)
 	}
 }

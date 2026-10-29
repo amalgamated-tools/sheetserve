@@ -98,7 +98,7 @@ The server creates the spreadsheet in your Drive with your Google account, write
 and saves the column types. A tab with no key column gets an `id` column first, unless you list one.
 `drive.file` covers files the app creates, so you don't need to pick it.
 
-![The Create a spreadsheet form: a Products tab keyed by sku and an Orders tab that gets an id column, each with typed columns](docs/images/create-spreadsheet.jpg)
+![The Create a spreadsheet form: a Products tab keyed by sku with a status that is one of draft, live or retired, and an Orders tab that gets an id column, with defaults for stock, status and qty](docs/images/create-spreadsheet.jpg)
 
 A key acts through the Google account of the user who made it.
 
@@ -135,6 +135,7 @@ In a column that mixes numbers and text, numbers sort before text.
 `contains` ignores case. A row must match every filter.
 
 `sort=col` sorts ascending and `sort=-col` sorts descending, with the same comparison rules. Sorting happens before `limit` and `offset`.
+A list's `X-Total-Count` header says how many rows match its filters, before `limit` and `offset`, so a client knows how many pages there are.
 
 A successful create returns `201`. Errors use these status codes:
 

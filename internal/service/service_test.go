@@ -66,7 +66,7 @@ func TestDatesAndTypedFilters(t *testing.T) {
 	}
 	svc := New(cfg, st, 0)
 	ctx := context.Background()
-	rows, err := svc.List(ctx, "shop", "Tasks", nil, "", 0, 0)
+	rows, _, err := svc.List(ctx, "shop", "Tasks", nil, "", 0, 0)
 	if err != nil || len(rows) != 2 || rows[0]["due"] != "2026-11-05" || rows[0]["at"] != "2026-11-05T09:30:00Z" || rows[1]["due"] != "soon" {
 		t.Fatalf("list: %v %v", rows, err)
 	}
@@ -80,7 +80,7 @@ func TestDatesAndTypedFilters(t *testing.T) {
 		"points[contains]=8":               {"a"},
 	} {
 		k, v, _ := strings.Cut(filter, "=")
-		got, err := svc.List(ctx, "shop", "Tasks", map[string]string{k: v}, "", 0, 0)
+		got, _, err := svc.List(ctx, "shop", "Tasks", map[string]string{k: v}, "", 0, 0)
 		var ids []string
 		for _, r := range got {
 			ids = append(ids, r["id"].(string))
@@ -95,7 +95,7 @@ func TestDatesAndTypedFilters(t *testing.T) {
 		"due=11/5/2026":   "due must be a date like 2026-01-31",
 	} {
 		k, v, _ := strings.Cut(filter, "=")
-		if _, err := svc.List(ctx, "shop", "Tasks", map[string]string{k: v}, "", 0, 0); err == nil || !strings.Contains(err.Error(), msg) {
+		if _, _, err := svc.List(ctx, "shop", "Tasks", map[string]string{k: v}, "", 0, 0); err == nil || !strings.Contains(err.Error(), msg) {
 			t.Errorf("filter %s: %v, want %q", filter, err, msg)
 		}
 	}
@@ -160,10 +160,10 @@ func TestDefaultsOnCreate(t *testing.T) {
 	if _, err := svc.Create(ctx, "shop", "Orders", map[string]any{"status": "lost"}); err == nil || !strings.Contains(err.Error(), "status must be one of new, paid") {
 		t.Errorf("bad enum: %v", err)
 	}
-	if _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status": "lost"}, "", 0, 0); err == nil || !strings.Contains(err.Error(), "status must be one of new, paid") {
+	if _, _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status": "lost"}, "", 0, 0); err == nil || !strings.Contains(err.Error(), "status must be one of new, paid") {
 		t.Errorf("bad enum filter: %v", err)
 	}
-	if _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status[contains]": "pa"}, "", 0, 0); err != nil {
+	if _, _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status[contains]": "pa"}, "", 0, 0); err != nil {
 		t.Errorf("enum contains: %v", err)
 	}
 }

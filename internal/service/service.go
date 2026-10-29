@@ -254,19 +254,20 @@ type cond struct {
 	val string
 }
 
-// List returns rows matching every filter, sorted by sort ("col" or "-col" for descending), then paged.
+// List returns rows matching every filter, sorted by sort ("col" or "-col" for descending), then
+// paged, and how many rows matched before paging.
 // Filter keys are "col" or "col[op]". An exact column name always wins over a sort prefix or filter
 // suffix, so columns named "-x" or "x[ne]" stay reachable.
-func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, sort string, limit, offset int) ([]map[string]any, error) {
+func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string]string, sort string, limit, offset int) (_ []map[string]any, total int, err error) {
 	if limit < 0 {
-		return nil, BadRequest("invalid limit")
+		return nil, 0, BadRequest("invalid limit")
 	}
 	if offset < 0 {
-		return nil, BadRequest("invalid offset")
+		return nil, 0, BadRequest("invalid offset")
 	}
 	snap, err := s.load(ctx, sheet, tab, false)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	visible := s.visibleColumns(snap, sheet, tab)
 	// Filtering or sorting on a hidden column would leak its values.
@@ -282,24 +283,21 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 		if j := strings.LastIndex(k, "["); j > 0 && strings.HasSuffix(k, "]") && !slices.Contains(visible, k) {
 			name, op = k[:j], k[j+1:len(k)-1]
 			if !slices.Contains(filterOps, op) {
-				return nil, BadRequest("unknown operator %q (want one of %v)", op, filterOps)
+				return nil, 0, BadRequest("unknown operator %q (want one of %v)", op, filterOps)
 			}
 		}
 		i, err := column(name)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		col := s.columns(sheet, tab)[name]
 		if v, err = filterValue(col, k, op, v); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		conds = append(conds, cond{i, col.Type, op, v})
 	}
 	var matched [][]any
 	for _, row := range snap.rows {
-		if sort == "" && limit > 0 && len(matched) == offset+limit {
-			break // unsorted: the page is already complete
-		}
 		if !slices.ContainsFunc(conds, func(c cond) bool { return !c.match(cell(row, c.col)) }) {
 			matched = append(matched, row)
 		}
@@ -311,7 +309,7 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 		}
 		i, err := column(name)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		slices.SortStableFunc(matched, func(a, b []any) int {
 			c := compare(cell(a, i), cell(b, i))
@@ -321,6 +319,7 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 			return c
 		})
 	}
+	total = len(matched)
 	matched = matched[min(offset, len(matched)):]
 	if limit > 0 {
 		matched = matched[:min(limit, len(matched))]
@@ -329,7 +328,7 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 	for _, row := range matched {
 		out = append(out, s.toObject(snap, row, sheet, tab))
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func cell(row []any, i int) string {
