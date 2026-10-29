@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -165,5 +166,90 @@ func TestDefaultsOnCreate(t *testing.T) {
 	}
 	if _, _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status[contains]": "pa"}, "", 0, 0); err != nil {
 		t.Errorf("enum contains: %v", err)
+	}
+}
+
+// movingStore is a sheet where someone inserts a row above row 2 each time a cell is read, up to
+// moves times, as a person editing by hand while the API writes might.
+type movingStore struct {
+	rows  [][]any
+	moves int
+	reads int
+}
+
+func (m *movingStore) Read(context.Context, string, string) ([][]any, error) {
+	out := make([][]any, len(m.rows))
+	for i, r := range m.rows {
+		out[i] = slices.Clone(r)
+	}
+	return out, nil
+}
+
+func (m *movingStore) ReadCell(_ context.Context, _, _ string, row, col int) (any, error) {
+	m.reads++
+	if m.moves > 0 {
+		m.moves--
+		m.rows = slices.Insert(m.rows, 1, []any{"typed-by-hand", "x"})
+	}
+	if row-1 < len(m.rows) && col < len(m.rows[row-1]) {
+		return m.rows[row-1][col], nil
+	}
+	return nil, nil
+}
+
+func (m *movingStore) SetCells(_ context.Context, _, _ string, row int, cells map[int]any) error {
+	for c, v := range cells {
+		m.rows[row-1][c] = v
+	}
+	return nil
+}
+
+func (m *movingStore) DeleteRow(_ context.Context, _, _ string, row int) error {
+	m.rows = slices.Delete(m.rows, row-1, row)
+	return nil
+}
+func (m *movingStore) Append(context.Context, string, string, []any) error { return nil }
+func (m *movingStore) Tabs(context.Context, string) ([]string, error)      { return nil, nil }
+
+// An update or delete reads its row's key back just before writing, and finds the row again when
+// rows moved, so it never writes to the wrong one.
+func TestLocateRowThatMoved(t *testing.T) {
+	cfg := &db.Settings{Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{"Orders": {Ops: db.AllOps}}}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	newStore := func(moves int) *movingStore {
+		return &movingStore{moves: moves, rows: [][]any{{"id", "item"}, {"a", "tea"}, {"b", "mug"}}}
+	}
+
+	st := newStore(1)
+	if _, err := New(cfg, st, 0).Update(ctx, "shop", "Orders", "b", map[string]any{"item": "cup"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := [][]any{{"id", "item"}, {"typed-by-hand", "x"}, {"a", "tea"}, {"b", "cup"}}; !reflect.DeepEqual(st.rows, want) || st.reads != 2 {
+		t.Errorf("update after a move: %v, %d reads", st.rows, st.reads)
+	}
+
+	st = newStore(2)
+	if err := New(cfg, st, 0).Delete(ctx, "shop", "Orders", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.rows) != 4 || slices.ContainsFunc(st.rows, func(r []any) bool { return r[0] == "a" }) || st.rows[3][0] != "b" {
+		t.Errorf("delete after two moves: %v", st.rows)
+	}
+
+	st = newStore(locateTries)
+	if _, err := New(cfg, st, 0).Update(ctx, "shop", "Orders", "b", map[string]any{"item": "cup"}); err == nil || !strings.Contains(err.Error(), "kept moving") {
+		t.Errorf("rows that keep moving: %v", err)
+	}
+	if slices.ContainsFunc(st.rows, func(r []any) bool { return r[1] == "cup" }) {
+		t.Errorf("wrote while rows kept moving: %v", st.rows)
+	}
+
+	// A bad update is refused before any cell is read.
+	st = newStore(0)
+	if _, err := New(cfg, st, 0).Update(ctx, "shop", "Orders", "b", map[string]any{"nope": 1}); err == nil || st.reads != 0 {
+		t.Errorf("bad field: %v, %d reads", err, st.reads)
 	}
 }

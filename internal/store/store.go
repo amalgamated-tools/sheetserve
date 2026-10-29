@@ -24,6 +24,12 @@ type Store interface {
 	Tabs(ctx context.Context, spreadsheetID string) ([]string, error)
 }
 
+// CellReader reads one cell, with dates and times as serial numbers. A Store that can't doesn't
+// implement it, and writes go to the row the tab was last read at without checking it.
+type CellReader interface {
+	ReadCell(ctx context.Context, spreadsheetID, tab string, row, col int) (any, error)
+}
+
 // SerialReader reads chosen columns of a tab with dates and times as serial numbers, one slice per
 // column from row 1. A Store that can't doesn't implement it, and its dates read as they show.
 type SerialReader interface {
@@ -89,6 +95,17 @@ func (g *googleStore) ReadSerial(ctx context.Context, id, tab string, cols []int
 		}
 	}
 	return out, nil
+}
+
+// ReadCell reads the cell at row (1-based) and col (0-based); a blank cell reads as nil.
+func (g *googleStore) ReadCell(ctx context.Context, id, tab string, row, col int) (_ any, err error) {
+	defer logCall(ctx, "read_cell", id, tab, time.Now(), &err)
+	resp, err := g.svc.Spreadsheets.Values.Get(id, quoteTab(tab)+"!"+colName(col)+strconv.Itoa(row)).
+		ValueRenderOption("UNFORMATTED_VALUE").DateTimeRenderOption("SERIAL_NUMBER").Context(ctx).Do()
+	if err != nil || len(resp.Values) == 0 || len(resp.Values[0]) == 0 {
+		return nil, err
+	}
+	return resp.Values[0][0], nil
 }
 
 // Writes use USER_ENTERED input, so a Date becomes a date cell, but every string goes in with a
