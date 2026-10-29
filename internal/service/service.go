@@ -289,11 +289,11 @@ func (s *Service) List(ctx context.Context, sheet, tab string, filter map[string
 		if err != nil {
 			return nil, err
 		}
-		typ := s.columns(sheet, tab)[name].Type
-		if v, err = filterValue(typ, k, op, v); err != nil {
+		col := s.columns(sheet, tab)[name]
+		if v, err = filterValue(col, k, op, v); err != nil {
 			return nil, err
 		}
-		conds = append(conds, cond{i, typ, op, v})
+		conds = append(conds, cond{i, col.Type, op, v})
 	}
 	var matched [][]any
 	for _, row := range snap.rows {
@@ -400,7 +400,8 @@ func (s *Service) Get(ctx context.Context, sheet, tab, id string) (map[string]an
 
 // checkFields rejects writes to unknown or hidden columns, and to the key column unless creating
 // a row on a tab whose key isn't "id". The server assigns ids, and a row's key never changes. It
-// also checks each value against its column's type, and that a new row fills every required column.
+// also checks each value against its column's type, and that a new row fills every required column
+// that has no default.
 func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[string]any, creating bool) error {
 	visible := s.visibleColumns(snap, sheet, tab)
 	key := snap.header[snap.key]
@@ -421,7 +422,7 @@ func (s *Service) checkFields(snap snapshot, sheet, tab string, fields map[strin
 	}
 	if creating {
 		for _, c := range visible {
-			if _, sent := fields[c]; !sent && cols[c].Required && (c != key || key != "id") {
+			if _, sent := fields[c]; !sent && cols[c].Required && cols[c].Default == "" && (c != key || key != "id") {
 				return BadRequest("%s is required", c)
 			}
 		}
@@ -443,7 +444,11 @@ func (s *Service) Create(ctx context.Context, sheet, tab string, fields map[stri
 	}
 	row, cols := make([]any, len(snap.header)), s.columns(sheet, tab)
 	for i, h := range snap.header {
-		row[i] = cellValue(normalize(cols[h].Type, fields[h]))
+		v, sent := fields[h]
+		if d, ok := DefaultValue(cols[h]); !sent && ok && i != snap.key {
+			v = d
+		}
+		row[i] = cellValue(normalize(cols[h].Type, v))
 	}
 	if key := snap.header[snap.key]; key == "id" {
 		row[snap.key] = rand.Text()

@@ -70,3 +70,47 @@ func TestReadValue(t *testing.T) {
 		}
 	}
 }
+
+func TestEnumAndDefaults(t *testing.T) {
+	size := db.Column{Type: "enum", Options: []string{"S", "M"}}
+	for v, ok := range map[any]bool{"S": true, "M": true, "L": false, "s": false, 1.0: false} {
+		if err := checkValue("size", size, v); (err == nil) != ok {
+			t.Errorf("checkValue(size, %#v): %v", v, err)
+		}
+	}
+	if err := checkValue("size", size, "L"); err == nil || err.Error() != `size must be one of S, M, got "L"` {
+		t.Errorf("enum message: %v", err)
+	}
+	for _, c := range []struct {
+		col db.Column
+		ok  bool
+	}{
+		{db.Column{Type: "enum"}, false},
+		{db.Column{Type: "enum", Options: []string{"S"}, Default: "S"}, true},
+		{db.Column{Type: "enum", Options: []string{"S"}, Default: "XL"}, false},
+		{db.Column{Type: "integer", Default: "3"}, true},
+		{db.Column{Type: "integer", Default: "3.5"}, false},
+		{db.Column{Type: "integer", Default: "three"}, false},
+		{db.Column{Type: "boolean", Default: "TRUE"}, true},
+		{db.Column{Type: "boolean", Default: "yes"}, false},
+		{db.Column{Type: "date", Default: "2026-01-31"}, true},
+		{db.Column{Type: "date", Default: "soon"}, false},
+		{db.Column{Default: "anything"}, true},
+	} {
+		if err := CheckColumn("col", c.col); (err == nil) != c.ok {
+			t.Errorf("CheckColumn(%+v): %v", c.col, err)
+		}
+	}
+	for _, c := range []struct {
+		col  db.Column
+		want any
+	}{
+		{db.Column{Type: "integer", Default: "3"}, json.Number("3")},
+		{db.Column{Type: "boolean", Default: "TRUE"}, true},
+		{db.Column{Type: "enum", Options: []string{"S"}, Default: "S"}, "S"},
+	} {
+		if got, ok := DefaultValue(c.col); !ok || got != c.want {
+			t.Errorf("DefaultValue(%+v) = %#v, want %#v", c.col, got, c.want)
+		}
+	}
+}

@@ -160,7 +160,7 @@ templ newTabCard(ti string, t tabForm) {
 		</div>
 		<div class="table-wrap">
 			<table class="columns builder">
-				<thead><tr><th>Column</th><th>Type</th><th>Required</th><th>Key</th><th></th></tr></thead>
+				<thead><tr><th>Column</th><th>Type</th><th>Required</th><th>Default</th><th>Key</th><th></th></tr></thead>
 				<tbody>
 					for j, c := range t.Columns {
 						@newColumnRow(ti, fmt.Sprintf("%sc%d", ti, j), t.Key, c)
@@ -171,7 +171,7 @@ templ newTabCard(ti string, t tabForm) {
 				</tbody>
 				<tfoot>
 					<tr>
-						<td colspan="3"><button type="button" class="small" data-add-column>+ Add column</button></td>
+						<td colspan="4"><button type="button" class="small" data-add-column>+ Add column</button></td>
 						<td colspan="2"><label><input type="radio" data-f="key" name={ ti + "key" } value="" checked?={ t.Key == "" }/> Add <code>id</code></label></td>
 					</tr>
 				</tfoot>
@@ -184,13 +184,15 @@ templ newColumnRow(ti, cj, key string, c columnForm) {
 	<tr>
 		<td><input data-f="col" name={ cj } value={ c.Name } placeholder="item" aria-label="Column name"/></td>
 		<td>
-			<select data-f="type" name={ cj + "type" } aria-label="Column type">
+			<select class="col-type" data-f="type" name={ cj + "type" } aria-label="Column type">
 				for _, o := range columnTypeOptions {
 					<option value={ o.Type } selected?={ c.Type == o.Type }>{ o.Label }</option>
 				}
 			</select>
+			@enumOptions(cj, c.Options, "", c.Type)
 		</td>
 		<td><input type="checkbox" data-f="required" name={ cj + "required" } value="1" checked?={ c.Required } aria-label="Required"/></td>
+		<td><input data-f="default" name={ cj + "default" } value={ c.Default } aria-label="Default"/></td>
 		<td><input type="radio" data-f="key" name={ ti + "key" } value={ c.Name } checked?={ c.Name != "" && c.Name == key } aria-label="Key column"/></td>
 		<td class="right"><button type="button" class="small" data-remove-column aria-label="Remove column">×</button></td>
 	</tr>

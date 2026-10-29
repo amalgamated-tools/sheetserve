@@ -33,12 +33,14 @@ type TabRule struct {
 }
 
 // ColumnTypes are the types a column can have. A column whose Type is "" takes any value.
-var ColumnTypes = []string{"string", "number", "integer", "boolean", "date", "datetime"}
+var ColumnTypes = []string{"string", "number", "integer", "boolean", "date", "datetime", "enum"}
 
 // Column is what values a column of a tab accepts.
 type Column struct {
-	Type     string // one of ColumnTypes, or "" for any value
-	Required bool   // a row must hold a value in it
+	Type     string   // one of ColumnTypes, or "" for any value
+	Required bool     // a row must hold a value in it
+	Options  []string // the values an enum column allows
+	Default  string   // the value a new row gets when it sends none, as text; "" for none
 }
 
 // KeyColumn returns the column that identifies a row. A tab whose header lacks it can only be listed.
@@ -71,6 +73,9 @@ func (s *Settings) Validate() error {
 			for col, c := range rule.Columns {
 				if c.Type != "" && !slices.Contains(ColumnTypes, c.Type) {
 					return fmt.Errorf("tab %s/%s: column %q: unknown type %q (want one of %v)", name, tab, col, c.Type, ColumnTypes)
+				}
+				if (c.Type == "enum") != (len(c.Options) > 0) {
+					return fmt.Errorf("tab %s/%s: column %q: an enum needs its values, and only an enum has them", name, tab, col)
 				}
 			}
 		}

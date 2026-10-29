@@ -130,3 +130,40 @@ func TestFromSerial(t *testing.T) {
 		}
 	}
 }
+
+// A create fills columns it leaves out from their defaults, so a required column with a default
+// can be left out. Enum filters must name one of the values.
+func TestDefaultsOnCreate(t *testing.T) {
+	cfg := &db.Settings{Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+		"Orders": {Ops: db.AllOps, Hidden: []string{"source"}, Columns: map[string]db.Column{
+			"status": {Type: "enum", Options: []string{"new", "paid"}, Required: true, Default: "new"},
+			"qty":    {Type: "integer", Default: "1"},
+			"source": {Default: "api"}, // hidden, but still filled in
+		}},
+	}}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	st := &serialStore{rows: [][]any{{"id", "status", "qty", "source"}}}
+	svc := New(cfg, st, 0)
+	ctx := context.Background()
+	row, err := svc.Create(ctx, "shop", "Orders", map[string]any{})
+	if err != nil || row["status"] != "new" || row["qty"] != json.Number("1") || row["source"] != nil {
+		t.Fatalf("create with defaults: %v %v", row, err)
+	}
+	if w := st.written[0]; w[1] != "new" || w[2] != json.Number("1") || w[3] != "api" {
+		t.Errorf("written: %v", w)
+	}
+	if row, err := svc.Create(ctx, "shop", "Orders", map[string]any{"status": "paid", "qty": nil}); err != nil || row["status"] != "paid" || row["qty"] != nil {
+		t.Errorf("create overriding defaults: %v %v", row, err)
+	}
+	if _, err := svc.Create(ctx, "shop", "Orders", map[string]any{"status": "lost"}); err == nil || !strings.Contains(err.Error(), "status must be one of new, paid") {
+		t.Errorf("bad enum: %v", err)
+	}
+	if _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status": "lost"}, "", 0, 0); err == nil || !strings.Contains(err.Error(), "status must be one of new, paid") {
+		t.Errorf("bad enum filter: %v", err)
+	}
+	if _, err := svc.List(ctx, "shop", "Orders", map[string]string{"status[contains]": "pa"}, "", 0, 0); err != nil {
+		t.Errorf("enum contains: %v", err)
+	}
+}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"io/fs"
-	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -101,13 +101,15 @@ func TestDashboardChanges(t *testing.T) {
 	if err := db.SaveOps(ctx, id, "shop", "Nope", nil); err == nil || !strings.Contains(err.Error(), "unknown tab") {
 		t.Errorf("save unknown tab: %v", err)
 	}
-	cols := map[string]Column{"qty": {Type: "integer", Required: true}, "note": {}}
+	cols := map[string]Column{"qty": {Type: "integer", Required: true, Default: "1"}, "note": {}, "size": {Type: "enum", Options: []string{"S", "M"}}}
 	if err := db.SaveColumns(ctx, id, "shop", map[string]TabRule{"Orders": {Hidden: []string{"cost"}, Key: "sku", Columns: cols}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range []map[string]TabRule{
 		{"Nope": {}},
 		{"Orders": {Columns: map[string]Column{"qty": {Type: "float"}}}},
+		{"Orders": {Columns: map[string]Column{"size": {Type: "enum"}}}},
+		{"Orders": {Columns: map[string]Column{"qty": {Type: "integer", Options: []string{"1"}}}}},
 	} {
 		if err := db.SaveColumns(ctx, id, "shop", bad); err == nil {
 			t.Errorf("save columns %v: no error", bad)
@@ -124,10 +126,10 @@ func TestDashboardChanges(t *testing.T) {
 		t.Errorf("spreadsheets: %+v", sheets)
 	}
 	if rule := cfg.Spreadsheets["shop"].Tabs["Orders"]; !slices.Equal(rule.Ops, []string{"read"}) || !slices.Equal(rule.Hidden, []string{"cost"}) ||
-		rule.KeyColumn() != "sku" || !maps.Equal(rule.Columns, cols) || len(cfg.Keys) != 0 {
+		rule.KeyColumn() != "sku" || !reflect.DeepEqual(rule.Columns, cols) || len(cfg.Keys) != 0 {
 		t.Errorf("config: %+v %+v", rule, cfg.Keys)
 	}
-	if rule := cfg.Spreadsheets["shop"].Tabs["Items"]; rule.KeyColumn() != "sku" || rule.Columns["qty"] != (Column{Type: "integer", Required: true}) {
+	if rule := cfg.Spreadsheets["shop"].Tabs["Items"]; rule.KeyColumn() != "sku" || !reflect.DeepEqual(rule.Columns["qty"], Column{Type: "integer", Required: true}) {
 		t.Errorf("Items as added: %+v", rule)
 	}
 	if rule := cfg.Spreadsheets["crm"].Tabs["People"]; rule.Columns != nil || rule.KeyColumn() != "id" {

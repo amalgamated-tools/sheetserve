@@ -652,3 +652,34 @@ func TestTypedColumnsMCP(t *testing.T) {
 		t.Errorf("create via mcp: %s", body)
 	}
 }
+
+// An enum's values and a column's default go into the schemas, and a required column with a default
+// isn't required on create.
+func TestEnumAndDefaultSchemas(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+			"Orders": {Ops: db.AllOps, Columns: map[string]db.Column{
+				"status": {Type: "enum", Options: []string{"new", "paid"}, Required: true, Default: "new"},
+				"size":   {Type: "enum", Options: []string{"S", "M"}},
+				"qty":    {Type: "integer", Required: true},
+			}},
+		}}},
+		Keys: []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, service.New(cfg, &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "status", "size", "qty"}}}}, 0)).Mux()
+	_, spec := call(t, h, "GET", "/openapi.json", "admin-key", "")
+	for _, want := range []string{
+		`"status":{"default":"new","enum":["new","paid"],"type":"string"}`,
+		`"size":{"enum":["S","M",null],"type":["string","null"]}`,
+		`"name":"status","schema":{"enum":["new","paid"],"type":"string"}`,
+		`"name":"size[gt]","schema":{"type":"string"}`,
+		`"required":["qty"]`,
+	} {
+		if !strings.Contains(spec, want) {
+			t.Errorf("spec lacks %s: %s", want, spec)
+		}
+	}
+}

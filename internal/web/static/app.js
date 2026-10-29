@@ -23,3 +23,12 @@ document.querySelectorAll("[data-copy]").forEach((btn) => {
 document.querySelectorAll("form[data-confirm]").forEach((f) => {
   f.onsubmit = (e) => { if (!confirm(f.dataset.confirm)) e.preventDefault(); };
 });
+
+// A column's values box shows while its type menu says One of (enum), filled in from the column's
+// distinct values if it's empty. Delegated, so rows added later work too.
+document.addEventListener("change", (e) => {
+  if (!e.target.matches("select.col-type")) return;
+  const box = e.target.parentElement.querySelector(".enum-options");
+  box.hidden = e.target.value !== "enum";
+  if (!box.hidden && !box.value) box.value = box.dataset.values || "";
+});

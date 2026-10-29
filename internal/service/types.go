@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ var typeNames = map[string]string{
 	"boolean":  "true or false",
 	"date":     "a date like 2026-01-31",
 	"datetime": "a date and time like 2026-01-31T09:30:00Z",
+	"enum":     "one of its values",
 }
 
 // checkValue returns why v can't go in column name, or nil. null or "" empties the cell, which a
@@ -50,6 +52,12 @@ func checkValue(name string, c db.Column, v any) error {
 		s, isString := v.(string)
 		_, err := time.Parse(layout, s)
 		ok = isString && err == nil
+	case "enum":
+		s, isString := v.(string)
+		if !isString || !slices.Contains(c.Options, s) {
+			got, _ := json.Marshal(v)
+			return BadRequest("%s must be one of %s, got %s", name, strings.Join(c.Options, ", "), got)
+		}
 	}
 	if !ok {
 		got, _ := json.Marshal(v)
@@ -84,7 +92,7 @@ func readValue(typ string, v any) any {
 	s, isString := v.(string)
 	s = strings.TrimSpace(s)
 	switch typ {
-	case "string":
+	case "string", "enum":
 		if f, ok := v.(float64); ok {
 			return strconv.FormatFloat(f, 'f', -1, 64)
 		}
@@ -154,11 +162,11 @@ func toStore(typ string, v any) any {
 
 // filterValue returns a filter's value as List compares it, or why it can't be in a column of type
 // typ. contains matches text, so it takes any value.
-func filterValue(typ, key, op, v string) (string, error) {
+func filterValue(c db.Column, key, op, v string) (string, error) {
 	if op == "contains" {
 		return v, nil
 	}
-	switch typ {
+	switch typ := c.Type; typ {
 	case "number", "integer":
 		if _, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err != nil {
 			return "", BadRequest("%s must be a number, got %q", key, v)
@@ -169,14 +177,57 @@ func filterValue(typ, key, op, v string) (string, error) {
 			return "", BadRequest("%s must be true or false, got %q", key, v)
 		}
 		return strings.ToLower(v), nil
+	case "enum":
+		if (op == "eq" || op == "ne") && v != "" && !slices.Contains(c.Options, v) {
+			return "", BadRequest("%s must be one of %s, got %q", key, strings.Join(c.Options, ", "), v)
+		}
 	case "date", "datetime":
 		if v == "" {
 			return v, nil // matches an empty cell
 		}
 		if err := checkValue(key, db.Column{Type: typ}, v); err != nil {
-			return "", BadRequest("%s must be %s, got %q", key, typeNames[typ], v)
+			return "", BadRequest("%s must be %s, got %q", key, typeNames[c.Type], v)
 		}
 		return normalize(typ, v).(string), nil
 	}
 	return v, nil
+}
+
+// DefaultValue returns the value a new row gets in column c when it sends none: c.Default as its
+// type's JSON value.
+func DefaultValue(c db.Column) (any, bool) {
+	if c.Default == "" {
+		return nil, false
+	}
+	switch c.Type {
+	case "number", "integer":
+		return json.Number(c.Default), true
+	case "boolean":
+		return strings.EqualFold(c.Default, "true"), true
+	}
+	return c.Default, true
+}
+
+// CheckColumn returns why column name's settings don't fit together, or nil: an enum's values, and
+// a default that its type, or its values, would refuse.
+func CheckColumn(name string, c db.Column) error {
+	if c.Type == "enum" && len(c.Options) == 0 {
+		return BadRequest("%s: list the values an enum allows", name)
+	}
+	if c.Default == "" {
+		return nil
+	}
+	if c.Type == "boolean" && !strings.EqualFold(c.Default, "true") && !strings.EqualFold(c.Default, "false") {
+		return BadRequest("%s: the default must be true or false", name)
+	}
+	if c.Type == "number" || c.Type == "integer" {
+		if _, err := strconv.ParseFloat(c.Default, 64); err != nil {
+			return BadRequest("%s: the default must be %s", name, typeNames[c.Type])
+		}
+	}
+	v, _ := DefaultValue(c)
+	if err := checkValue(name, c, v); err != nil {
+		return BadRequest("%s: the default doesn't fit: %s", name, err)
+	}
+	return nil
 }

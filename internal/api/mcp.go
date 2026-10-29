@@ -100,8 +100,8 @@ func writeFields(rowKey string, cols []string, types map[string]db.Column) (crea
 	for _, c := range cols {
 		if c != rowKey || rowKey != "id" {
 			createCols[c] = valueSchema(types[c])
-			if types[c].Required {
-				required = append(required, c)
+			if types[c].Required && (types[c].Default == "" || c == rowKey) {
+				required = append(required, c) // a default fills a required column the client leaves out
 			}
 		}
 		if c != rowKey {
@@ -128,19 +128,33 @@ func (a *API) columnTypes(sheet, tab, rowKey string) map[string]db.Column {
 	return types
 }
 
-// valueSchema is the JSON schema of a value in a column of type c. A typed column that isn't
-// required can be empty, which reads as null. An untyped column can hold anything.
+// valueSchema is the JSON schema of a value in a column of type c, with its default. A typed column
+// that isn't required can be empty, which reads as null. An untyped column can hold anything.
 func valueSchema(c db.Column) map[string]any {
+	s := map[string]any{}
+	if d, ok := service.DefaultValue(c); ok {
+		s["default"] = d
+	}
 	typ, format := c.Type, ""
 	switch c.Type {
 	case "":
-		return map[string]any{}
+		return s
 	case "date":
 		typ, format = "string", "date"
 	case "datetime":
 		typ, format = "string", "date-time"
+	case "enum":
+		typ = "string"
+		values := []any{}
+		for _, o := range c.Options {
+			values = append(values, o)
+		}
+		if !c.Required {
+			values = append(values, nil)
+		}
+		s["enum"] = values
 	}
-	s := map[string]any{"type": typ}
+	s["type"] = typ
 	if !c.Required {
 		s["type"] = []any{typ, "null"}
 	}

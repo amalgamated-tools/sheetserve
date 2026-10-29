@@ -583,7 +583,7 @@ func TestColumnDrift(t *testing.T) {
 		`<strong>years</strong><input type="hidden" name="t0c1" value="years"> <span class="badge new">New</span>`,
 		`name="t0c1type" aria-label="Type of years"><option value="">Any</option><option value="string">Text</option><option value="number">Number</option><option value="integer" selected>`,
 		`<span class="badge new">New</span>`, `<td><s>age</s></td><td>Integer</td><td>Yes</td>`,
-		`<select class="renamed" data-type="integer" data-required aria-label="New name of age"><option value="">Removed</option> <option value="years">years</option><option value="phone">phone</option></select>`,
+		`<select class="renamed" data-type="integer" data-required data-options="" data-default="" aria-label="New name of age"><option value="">Removed</option> <option value="years">years</option><option value="phone">phone</option></select>`,
 		`src="/static/columns.js"`,
 	} {
 		if s != 200 || !strings.Contains(body, want) {
@@ -600,6 +600,52 @@ func TestColumnDrift(t *testing.T) {
 	}
 	if _, body := get(t, alice, srv.URL+"/sheets/columns?sheet=crm", ""); strings.Contains(body, "Not in row 1") || strings.Contains(body, "badge new") {
 		t.Errorf("drift left after saving: %s", body)
+	}
+}
+
+// Both column forms take an enum's values and a default, check them, and save them.
+func TestEnumAndDefaultForms(t *testing.T) {
+	fs := &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "status", "qty"}, {"o1", "new", 1.0}, {"o2", "paid", 2.0}, {"o3", "new", 1.0}}}}
+	dash, srv := newTestDashboard(t, fs)
+	alice := signInAs(t, dash, srv, "alice")
+	post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}})
+	if _, body := get(t, alice, srv.URL+"/sheets/columns?sheet=shop", ""); !strings.Contains(body, `name="t0c1options" value="" data-values="new, paid"`) {
+		t.Errorf("columns page offers no values for status: %s", body)
+	}
+	save := func(extra url.Values) (int, string) {
+		form := url.Values{"sheet": {"shop"}, "t0": {"Orders"}, "t0key": {"id"}, "t0c0": {"id"}, "t0c0type": {"string"},
+			"t0c1": {"status"}, "t0c1type": {"enum"}, "t0c1options": {" new, paid,new ,"}, "t0c1required": {"1"}, "t0c1default": {"new"},
+			"t0c2": {"qty"}, "t0c2type": {"integer"}, "t0c2default": {"1"}}
+		maps.Copy(form, extra)
+		return post(t, alice, srv.URL+"/app/sheets/columns", form)
+	}
+	for _, c := range []struct{ field, value, msg string }{
+		{"t0c1default", "lost", "status must be one of new, paid"},
+		{"t0c2default", "3.5", "qty must be an integer"},
+		{"t0c2default", "lots", "the default must be an integer"},
+		{"t0c1options", " , ", "list the values an enum allows"},
+		{"t0c0default", "x", "the key column id can&#39;t have a default"},
+	} {
+		if s, body := save(url.Values{c.field: {c.value}}); s != 400 || !strings.Contains(body, c.msg) {
+			t.Errorf("%s=%q: %d, want %q", c.field, c.value, s, c.msg)
+		}
+	}
+	if s, body := save(nil); s != 303 {
+		t.Fatalf("save: %d %s", s, body)
+	}
+	_, body := get(t, alice, srv.URL+"/sheets/columns?sheet=shop", "")
+	for _, want := range []string{`name="t0c1options" value="new, paid"`, `name="t0c1default" value="new"`, `name="t0c2default" value="1"`, `<option value="enum" selected>One of</option>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("columns page after save lacks %s", want)
+		}
+	}
+
+	form := url.Values{"name": {"store"}, "t0": {"Items"}, "t0c0": {"size"}, "t0c0type": {"enum"}, "t0c0options": {"S, M"}, "t0c0default": {"M"}}
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 303 {
+		t.Fatalf("create: %d %s", s, body)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets/columns?sheet=store", ""); !strings.Contains(body, `name="t0c1options" value="S, M"`) || !strings.Contains(body, `name="t0c1default" value="M"`) {
+		t.Errorf("created enum not saved: %s", body)
 	}
 }
 
