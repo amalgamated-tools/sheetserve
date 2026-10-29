@@ -7,6 +7,25 @@ document.querySelectorAll("form.tab-form").forEach((f) => {
   for (const input of f.elements) input.addEventListener("input", () => button.classList.add("dirty"));
 });
 
+// A tab row's preset menu sets its op checkboxes, and follows them: ticking a box by hand
+// switches the menu to the preset that matches, or to Custom.
+document.querySelectorAll("select.ops-preset").forEach((menu) => {
+  const boxes = [...document.querySelectorAll(`input[name=ops][form="${menu.dataset.form}"]`)];
+  menu.onchange = () => {
+    const ops = menu.value.split(",");
+    for (const box of boxes) {
+      if (box.checked === ops.includes(box.value)) continue;
+      box.checked = !box.checked;
+      box.dispatchEvent(new Event("input", { bubbles: true })); // lights up Save
+    }
+  };
+  const follow = () => {
+    const ops = boxes.filter((b) => b.checked).map((b) => b.value).join(",");
+    menu.value = [...menu.options].some((o) => o.value === ops && !o.disabled) ? ops : "custom";
+  };
+  for (const box of boxes) box.addEventListener("change", follow);
+});
+
 const add = document.getElementById("add"), pick = document.getElementById("pick"), pickArea = document.getElementById("pick-area");
 document.getElementById("add-cancel").onclick = () => { add.hidden = true; pickArea.hidden = false; };
 

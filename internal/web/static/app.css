@@ -58,7 +58,7 @@ button.danger:hover { background: var(--danger-soft); border-color: var(--danger
 button.small { padding: .15rem .55rem; font-size: .85rem; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-input[type=text], input:not([type]), input[type=url], textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .6rem; min-width: 0; }
+input[type=text], input:not([type]), input[type=url], textarea, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .6rem; min-width: 0; }
 input::placeholder { color: var(--muted); }
 label { white-space: nowrap; }
 form.inline { display: inline; }
@@ -70,6 +70,7 @@ fieldset { border: 0; padding: 0; margin: .75rem 0; }
 legend { font-weight: 600; font-size: .9rem; padding: 0; margin-bottom: .35rem; }
 
 .chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.ops { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; }
 .chip { display: inline-flex; align-items: center; gap: .3rem; border: 1px solid var(--border); border-radius: 999px; padding: .15rem .65rem; background: var(--bg); font-size: .9rem; cursor: pointer; user-select: none; }
 .chip input { margin: 0; accent-color: var(--accent); }
 .chip:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
