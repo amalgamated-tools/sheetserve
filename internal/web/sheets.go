@@ -56,17 +56,18 @@ func (d *Dashboard) addSheet(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, view{path: sheetsPage, err: "could not read that spreadsheet from Google" + googleDetail(err)}, http.StatusBadGateway)
 		return
 	}
-	d.saveSheet(w, r, u, "sheet.add", db.Spreadsheet{Name: name, Title: title, GoogleID: gid, Tabs: tabs})
+	// Next, the user reviews the columns of its tabs, with types suggested from their rows.
+	d.saveSheet(w, r, u, "sheet.add", db.Spreadsheet{Name: name, Title: title, GoogleID: gid, Tabs: tabs}, columnsURL(name))
 }
 
-// saveSheet records a spreadsheet and its tabs, logs action, then shows it on the spreadsheets page.
-func (d *Dashboard) saveSheet(w http.ResponseWriter, r *http.Request, u user, action string, s db.Spreadsheet) {
+// saveSheet records a spreadsheet and its tabs, logs action, then shows the page at to.
+func (d *Dashboard) saveSheet(w http.ResponseWriter, r *http.Request, u user, action string, s db.Spreadsheet, to string) {
 	err := d.DB.AddSpreadsheet(r.Context(), u.id, s)
 	if err == nil {
 		audit(r.Context(), u, action, slog.String(otelkeys.Sheet, s.Name), slog.String(otelkeys.SpreadsheetID, s.GoogleID),
 			slog.String(otelkeys.Tabs, strings.Join(s.Tabs, ",")))
 	}
-	d.change(w, r, u, sheetsPage+"#sheet-"+s.Name, err)
+	d.change(w, r, u, to, err)
 }
 
 // createSheet makes a blank spreadsheet in the user's Drive from a schema, then adds it like a
@@ -106,7 +107,8 @@ func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) 
 	for i, t := range tabs {
 		names[i] = t.Name
 	}
-	d.saveSheet(w, r, u, "sheet.create", db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Keys: keys})
+	d.saveSheet(w, r, u, "sheet.create", db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Keys: keys},
+		sheetsPage+"#sheet-"+form.Name)
 }
 
 // create makes a spreadsheet with the user's own credentials, so it lands in their Drive.
@@ -210,50 +212,17 @@ func (d *Dashboard) deleteSheet(w http.ResponseWriter, r *http.Request, u user) 
 	d.change(w, r, u, sheetsPage, err)
 }
 
-// TODO: hidden columns are free text; read the header row to offer checkboxes if typos bite.
+// saveTab sets the ops a tab allows. Its columns are set on the columns page.
 func (d *Dashboard) saveTab(w http.ResponseWriter, r *http.Request, u user) {
 	if err := r.ParseForm(); err != nil {
 		d.render(w, r, u, view{path: sheetsPage, err: "could not read the form"}, http.StatusBadRequest)
 		return
 	}
-	var hidden []string
-	for h := range strings.SplitSeq(r.FormValue("hidden"), ",") {
-		if h = strings.TrimSpace(h); h != "" {
-			hidden = append(hidden, h)
-		}
-	}
-	sheet, tab := r.FormValue("sheet"), r.FormValue("tab")
-	key := cmp.Or(strings.TrimSpace(r.FormValue("key")), "id")
-	// A tab without an id column is fine (it can only be listed), but a key someone typed should exist.
-	if key != "id" {
-		if msg := d.checkKey(r.Context(), u.id, sheet, tab, key); msg != "" {
-			d.render(w, r, u, view{path: sheetsPage, err: msg}, http.StatusBadRequest)
-			return
-		}
-	}
-	rule := db.TabRule{Ops: r.Form["ops"], Hidden: hidden, Key: key}
-	err := d.DB.SaveTab(r.Context(), u.id, sheet, tab, rule)
+	sheet, tab, ops := r.FormValue("sheet"), r.FormValue("tab"), r.Form["ops"]
+	err := d.DB.SaveOps(r.Context(), u.id, sheet, tab, ops)
 	if err == nil {
 		audit(r.Context(), u, "tab.save", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
-			slog.String(otelkeys.Ops, strings.Join(rule.Ops, ",")), slog.String(otelkeys.Hidden, strings.Join(hidden, ",")),
-			slog.String(otelkeys.KeyColumn, key))
+			slog.String(otelkeys.Ops, strings.Join(ops, ",")))
 	}
 	d.change(w, r, u, sheetsPage+"#sheet-"+sheet, err)
-}
-
-// checkKey reads the tab's header from Google and returns why key can't be its key column, or "".
-func (d *Dashboard) checkKey(ctx context.Context, userID int64, sheet, tab, key string) string {
-	svc, err := d.Tenants.Service(ctx, userID)
-	var header []string
-	if err == nil {
-		header, err = svc.Header(ctx, sheet, tab)
-	}
-	switch {
-	case err != nil:
-		slog.Error("read header", "user", userID, "sheet", sheet, "tab", tab, "err", err)
-		return "could not read " + sheet + "/" + tab + " from Google to check its key column" + googleDetail(err)
-	case !slices.Contains(header, key):
-		return fmt.Sprintf("%s/%s has no %q column in row 1", sheet, tab, key)
-	}
-	return ""
 }

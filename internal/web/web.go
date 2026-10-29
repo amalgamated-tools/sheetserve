@@ -36,6 +36,7 @@ type user struct {
 const (
 	sheetsPage   = "/sheets"
 	newSheetPage = "/sheets/new"
+	columnsPage  = "/sheets/columns" // ?sheet=<name>
 	keysPage     = "/keys"
 	usersPage    = "/users"
 	pendingPage  = "/pending" // shown instead of any page to a user who is not approved yet
@@ -66,8 +67,9 @@ type sheetView struct {
 type tabView struct {
 	Name   string
 	Ops    []string
-	Hidden string
-	Key    string // "" when it's the default, id
+	Key    string // the key column it names; whether the header has it is shown on the columns page
+	Typed  int    // how many of its columns have a type
+	Hidden int    // how many of its columns are hidden
 }
 
 type keyView struct{ Name, Tabs, Ops string }
@@ -112,6 +114,7 @@ func (d *Dashboard) routes(mux chi.Router) {
 			d.render(w, r, u, view{path: path}, http.StatusOK)
 		}))
 	}
+	mux.Get(columnsPage, d.signedIn(rbac.EditOwn, d.columns))
 	mux.Get(usersPage, d.signedIn(rbac.ManageUsers, func(w http.ResponseWriter, r *http.Request, u user) {
 		d.render(w, r, u, view{path: usersPage}, http.StatusOK)
 	}))
@@ -120,6 +123,7 @@ func (d *Dashboard) routes(mux chi.Router) {
 	mux.Post("/app/sheets/new", d.signedIn(rbac.EditOwn, d.createSheet))
 	mux.Post("/app/sheets/delete", d.signedIn(rbac.EditOwn, d.deleteSheet))
 	mux.Post("/app/tabs", d.signedIn(rbac.EditOwn, d.saveTab))
+	mux.Post("/app/sheets/columns", d.signedIn(rbac.EditOwn, d.saveColumns))
 	mux.Post("/app/keys", d.signedIn(rbac.EditOwn, d.createKey))
 	mux.Post("/app/keys/delete", d.signedIn(rbac.EditOwn, d.deleteKey))
 	mux.Post("/app/users/role", d.signedIn(rbac.ManageUsers, d.setRole))
@@ -254,11 +258,13 @@ func (d *Dashboard) load(ctx context.Context, userID int64) ([]sheetView, []keyV
 	for i, s := range sheets {
 		for _, tab := range s.Tabs {
 			rule := settings.Spreadsheets[s.Name].Tabs[tab]
-			key := rule.KeyColumn()
-			if key == "id" {
-				key = ""
+			typed := 0
+			for _, c := range rule.Columns {
+				if c.Type != "" {
+					typed++
+				}
 			}
-			views[i].Tabs = append(views[i].Tabs, tabView{tab, rule.Ops, strings.Join(rule.Hidden, ", "), key})
+			views[i].Tabs = append(views[i].Tabs, tabView{tab, rule.Ops, rule.KeyColumn(), typed, len(rule.Hidden)})
 			tabSpecs = append(tabSpecs, s.Name+"/"+tab)
 		}
 	}

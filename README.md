@@ -5,7 +5,7 @@ People sign in with Google and manage their spreadsheets, tabs and API keys in a
 The server keeps them in SQLite.
 
 - Each tab gets `GET / POST / PATCH / DELETE` routes.
-- You set the allowed operations for each tab, and you can hide columns.
+- You set the allowed operations for each tab, and a type for each column. Writes that don't match a column's type are refused.
 - API keys are scoped to tabs and operations. The database stores only their SHA-256 hashes.
 - `/mcp` serves an MCP endpoint. Each key gets tools for the tabs it can reach, built from the header row.
 - `/openapi.json` serves an OpenAPI 3.1 spec. It lists only the tabs, ops and columns the caller's key can use.
@@ -48,13 +48,38 @@ cp .env.example .env   # fill it in
 mise run run           # or: go run ./cmd/server, with the variables exported
 ```
 
-Sign in, add a spreadsheet from your Drive, and turn on the ops you want for each tab. New tabs start with no ops enabled.
+Sign in and add a spreadsheet from your Drive. The Columns page for it opens next (see [Columns](#columns)).
+Then turn on the ops you want for each tab. New tabs start with no ops enabled.
 Then create an API key on the API keys page. Row 1 of each tab is its header row.
 
 ![The API keys page: a new storefront key scoped to shop/Products and shop/Orders with read and create](docs/images/api-keys.jpg)
 
+## Columns
+
+Each spreadsheet has a Columns page, which the Columns button on its card opens. For each tab, it shows the columns in row 1, and for each column a type, whether it's required, and whether it is the key.
+The first time, the page suggests a type for each column from the first 50 rows. Check the suggestions, then save.
+
+| Type | A value must be |
+|---|---|
+| Any | Anything. A tab that was never saved on the Columns page has only Any columns. |
+| Text | A JSON string |
+| Number | A JSON number |
+| Integer | A JSON number with no fraction |
+| True/false | `true` or `false` |
+| Date | A string such as `2026-01-31` |
+| Date and time | An RFC 3339 string such as `2026-01-31T09:30:00Z` |
+
+- A create or update with a value of the wrong type returns `400`. So does a create without a required column.
+- `null` empties a cell, except in a required column. `""` empties a Text or Any column only.
+- Reads return each value as its column's type. A blank cell reads as `null`, and a number stored as text reads as a number.
+  A cell edited by hand to a value that doesn't fit, such as `n/a` in a Number column, comes back as it is.
+- The OpenAPI spec and the MCP tools give each column its type.
+- Dates are written as text, because writes use `RAW` input.
+
+Every column is in the API unless you hide it. Under Advanced, you can hide columns. A hidden column is left out of responses, the OpenAPI spec and the MCP tools, and it can't be written or filtered on.
+
 Each tab has a key column, which identifies a row in `GET`, `PATCH` and `DELETE /v1/<sheet>/<tab>/<key>`. It is `id` unless you
-name another column, such as `email` or `sku`, on the tab's row in the dashboard.
+pick another column, such as `email` or `sku`, on the Columns page.
 
 - With `id` as the key, the server generates the id of each row it creates, and clients can't set or change it.
 - With another key, a create must include it and its value must be new. An update can't change it.
@@ -114,7 +139,7 @@ A successful create returns `201`. Errors use these status codes:
 
 | Status | Cause |
 |---|---|
-| `400` | An unknown or hidden column, an unknown filter operator, a bad `limit` or `offset`, an `id` field in a create or update, a create without the tab's key column, a change to a row's key column, or an update with no fields |
+| `400` | An unknown or hidden column, a value that doesn't match its column's type, a missing required column, an unknown filter operator, a bad `limit` or `offset`, an `id` field in a create or update, a create without the tab's key column, a change to a row's key column, or an update with no fields |
 | `401` | A missing or invalid key |
 | `403` | The key or the tab does not allow the operation, or the tab has no key column |
 | `404` | An unknown tab or row |

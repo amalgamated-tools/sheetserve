@@ -26,9 +26,19 @@ type SheetRule struct {
 }
 
 type TabRule struct {
-	Ops    []string
-	Hidden []string
-	Key    string // the column that identifies a row; "" means "id"
+	Ops     []string
+	Hidden  []string
+	Key     string            // the column that identifies a row; "" means "id"
+	Columns map[string]Column // by header name; empty when the tab is untyped
+}
+
+// ColumnTypes are the types a column can have. A column whose Type is "" takes any value.
+var ColumnTypes = []string{"string", "number", "integer", "boolean", "date", "datetime"}
+
+// Column is what values a column of a tab accepts.
+type Column struct {
+	Type     string // one of ColumnTypes, or "" for any value
+	Required bool   // a row must hold a value in it
 }
 
 // KeyColumn returns the column that identifies a row. A tab whose header lacks it can only be listed.
@@ -57,6 +67,11 @@ func (s *Settings) Validate() error {
 		for tab, rule := range ss.Tabs {
 			if err := checkOps(rule.Ops); err != nil {
 				return fmt.Errorf("tab %s/%s: %w", name, tab, err)
+			}
+			for col, c := range rule.Columns {
+				if c.Type != "" && !slices.Contains(ColumnTypes, c.Type) {
+					return fmt.Errorf("tab %s/%s: column %q: unknown type %q (want one of %v)", name, tab, col, c.Type, ColumnTypes)
+				}
 			}
 		}
 	}

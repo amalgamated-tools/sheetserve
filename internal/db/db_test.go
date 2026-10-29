@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"io/fs"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -93,11 +94,23 @@ func TestDashboardChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.SaveTab(ctx, id, "shop", "Orders", TabRule{Ops: []string{"read"}, Hidden: []string{"cost"}}); err != nil {
+	if err := db.SaveOps(ctx, id, "shop", "Orders", []string{"read"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SaveTab(ctx, id, "shop", "Nope", TabRule{}); err == nil || !strings.Contains(err.Error(), "unknown tab") {
+	if err := db.SaveOps(ctx, id, "shop", "Nope", nil); err == nil || !strings.Contains(err.Error(), "unknown tab") {
 		t.Errorf("save unknown tab: %v", err)
+	}
+	cols := map[string]Column{"qty": {Type: "integer", Required: true}, "note": {}}
+	if err := db.SaveColumns(ctx, id, "shop", map[string]TabRule{"Orders": {Hidden: []string{"cost"}, Key: "sku", Columns: cols}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []map[string]TabRule{
+		{"Nope": {}},
+		{"Orders": {Columns: map[string]Column{"qty": {Type: "float"}}}},
+	} {
+		if err := db.SaveColumns(ctx, id, "shop", bad); err == nil {
+			t.Errorf("save columns %v: no error", bad)
+		}
 	}
 	if err := db.CreateKey(ctx, id, Key{Hash: HashKey("k"), Name: "bad", Tabs: []string{"shop/Nope"}}); err == nil {
 		t.Error("key for an unknown tab was accepted")
@@ -109,8 +122,12 @@ func TestDashboardChanges(t *testing.T) {
 	if len(sheets) != 2 || sheets[0].Name != "crm" || !slices.Equal(sheets[1].Tabs, []string{"Orders", "Items"}) {
 		t.Errorf("spreadsheets: %+v", sheets)
 	}
-	if rule := cfg.Spreadsheets["shop"].Tabs["Orders"]; !slices.Equal(rule.Ops, []string{"read"}) || rule.KeyColumn() != "id" || len(cfg.Keys) != 0 {
+	if rule := cfg.Spreadsheets["shop"].Tabs["Orders"]; !slices.Equal(rule.Ops, []string{"read"}) || !slices.Equal(rule.Hidden, []string{"cost"}) ||
+		rule.KeyColumn() != "sku" || !maps.Equal(rule.Columns, cols) || len(cfg.Keys) != 0 {
 		t.Errorf("config: %+v %+v", rule, cfg.Keys)
+	}
+	if rule := cfg.Spreadsheets["shop"].Tabs["Items"]; rule.Columns != nil {
+		t.Errorf("untyped tab has columns: %+v", rule.Columns)
 	}
 	if exists, err := db.SpreadsheetExists(ctx, id, "crm"); err != nil || !exists {
 		t.Errorf("crm exists: %v %v", exists, err)

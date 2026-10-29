@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -298,19 +300,52 @@ func (d *DB) DeleteSpreadsheet(ctx context.Context, userID int64, name string) e
 	})
 }
 
-// SaveTab sets the ops, hidden columns and key column of one of userID's tabs.
-func (d *DB) SaveTab(ctx context.Context, userID int64, sheet, tab string, rule TabRule) error {
+// SaveOps sets the ops one of userID's tabs allows.
+func (d *DB) SaveOps(ctx context.Context, userID int64, sheet, tab string, ops []string) error {
 	return d.update(ctx, userID, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE tabs SET ops = ?, hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
-			jsonList(rule.Ops), jsonList(rule.Hidden), cmp.Or(rule.Key, "id"), userID, sheet, tab)
-		if err != nil {
-			return err
-		}
-		if n, err := res.RowsAffected(); err != nil || n == 0 {
-			return cmp.Or(err, error(ValidationError("unknown tab")))
+		res, err := tx.ExecContext(ctx, `UPDATE tabs SET ops = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
+			jsonList(ops), userID, sheet, tab)
+		return mustAffect(res, err, "unknown tab")
+	})
+}
+
+// SaveColumns sets the key column, hidden columns and column types of userID's tabs in sheet, by
+// tab name. It leaves their ops alone, and replaces each tab's column types with rule.Columns.
+func (d *DB) SaveColumns(ctx context.Context, userID int64, sheet string, tabs map[string]TabRule) error {
+	return d.update(ctx, userID, func(tx *sql.Tx) error {
+		for _, tab := range slices.Sorted(maps.Keys(tabs)) {
+			rule := tabs[tab]
+			res, err := tx.ExecContext(ctx, `UPDATE tabs SET hidden = ?, key_column = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
+				jsonList(rule.Hidden), cmp.Or(rule.Key, "id"), userID, sheet, tab)
+			if err := mustAffect(res, err, "unknown tab"); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM columns WHERE user_id = ? AND sheet = ? AND tab = ?`, userID, sheet, tab); err != nil {
+				return err
+			}
+			for name, c := range rule.Columns {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO columns (user_id, sheet, tab, name, type, required) VALUES (?, ?, ?, ?, ?, ?)`,
+					userID, sheet, tab, name, c.Type, c.Required); err != nil {
+					if strings.Contains(err.Error(), "CHECK constraint failed") {
+						return ValidationError(fmt.Sprintf("column %q: unknown type %q", name, c.Type))
+					}
+					return err
+				}
+			}
 		}
 		return nil
 	})
+}
+
+// mustAffect returns err, or a ValidationError saying msg when the statement changed no rows.
+func mustAffect(res sql.Result, err error, msg string) error {
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return cmp.Or(err, error(ValidationError(msg)))
+	}
+	return nil
 }
 
 // CreateKey stores k (its hash, never the key itself) for userID.
@@ -355,6 +390,22 @@ func userSettings(ctx context.Context, q querier, userID int64) (*Settings, erro
 			if err := errors.Join(json.Unmarshal([]byte(ops), &rule.Ops), json.Unmarshal([]byte(hidden), &rule.Hidden)); err != nil {
 				return err
 			}
+			settings.Spreadsheets[sheet].Tabs[tab] = rule
+			return nil
+		})
+	}
+	if err == nil {
+		err = scan(ctx, q, `SELECT sheet, tab, name, type, required FROM columns WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+			var sheet, tab, name string
+			var c Column
+			if err := rows.Scan(&sheet, &tab, &name, &c.Type, &c.Required); err != nil {
+				return err
+			}
+			rule := settings.Spreadsheets[sheet].Tabs[tab]
+			if rule.Columns == nil {
+				rule.Columns = map[string]Column{}
+			}
+			rule.Columns[name] = c
 			settings.Spreadsheets[sheet].Tabs[tab] = rule
 			return nil
 		})

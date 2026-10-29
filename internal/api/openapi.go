@@ -35,14 +35,15 @@ func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 	schemas := obj{"Error": object(obj{"error": obj{"type": "string"}}, "error")}
 	paths := obj{}
 	a.eachTab(ctx, key, func(name, sheet, tab, rowKey string, ops, cols []string) {
-		// Rows carry every visible column (the key included) with raw cell values, so leave types open.
+		// Rows carry every visible column (the key included). An untyped column holds raw cell values.
+		types := a.columnTypes(sheet, tab, rowKey)
 		row := obj{}
 		for _, c := range cols {
-			row[c] = obj{}
+			row[c] = valueSchema(types[c])
 		}
 		schemas[name] = object(row, cols...)
 		ref := obj{"$ref": "#/components/schemas/" + name}
-		createInput, updateInput := writeFields(rowKey, cols)
+		createInput, updateInput := writeFields(rowKey, cols, types)
 
 		base := "/v1/" + url.PathEscape(sheet) + "/" + url.PathEscape(tab)
 		coll, item := obj{}, obj{}

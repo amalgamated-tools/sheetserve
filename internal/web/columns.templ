@@ -1,0 +1,82 @@
+package web
+
+import "fmt"
+
+templ columnsPageView(s shell, v columnsView) {
+	@layout(s) {
+		<div class="page-head">
+			<a class="back" href={ templ.SafeURL(sheetsPage + "#sheet-" + v.Sheet) }>← Spreadsheets</a>
+			<h1>Columns of { v.Sheet }</h1>
+			<p>Each column's type is checked on every create and update, and goes into the OpenAPI spec and MCP tools. A column set to Any takes any value. The key column finds single rows; a tab without one can only be listed.</p>
+		</div>
+		<form method="post" action="/app/sheets/columns">
+			<input type="hidden" name="sheet" value={ v.Sheet }/>
+			for i, t := range v.Tabs {
+				@tabColumnsCard(fmt.Sprintf("t%d", i), t)
+			}
+			<div class="actions"><button class="primary">Save columns</button> <a class="button" href={ templ.SafeURL(sheetsPage + "#sheet-" + v.Sheet) }>Cancel</a></div>
+		</form>
+	}
+}
+
+// tabColumnsCard edits one tab's columns. Its inputs are named from ti; see saveColumns.
+templ tabColumnsCard(ti string, t tabColumnsView) {
+	<section class="card">
+		<div class="card-head">
+			<h3>{ t.Name }</h3>
+			if t.Suggested && len(t.Columns) > 0 {
+				<span class="badge">Types suggested from its rows</span>
+			}
+		</div>
+		switch {
+			case t.Err != "":
+				<p class="error-text">{ t.Err }. Its columns are left as they are.</p>
+			case len(t.Columns) == 0:
+				<p class="muted">Row 1 is empty. Add a header row in Google Sheets, then come back to set its columns.</p>
+			default:
+				<input type="hidden" name={ ti } value={ t.Name }/>
+				if t.KeyRule != "" {
+					<p class="hint">Row 1 has no <code>{ t.KeyRule }</code> column, so this tab can only be listed. Pick a key column to change that.</p>
+				}
+				<div class="table-wrap">
+					<table class="columns">
+						<tr><th>Column</th><th>Type</th><th>Required</th><th>Key</th><th>First value</th></tr>
+						for j, c := range t.Columns {
+							@columnRow(fmt.Sprintf("%sc%d", ti, j), ti, t, c)
+						}
+						if t.Key == "" {
+							<tr><td colspan="3"></td><td><label><input type="radio" name={ ti + "key" } value="" checked/> None</label></td><td></td></tr>
+						}
+					</table>
+				</div>
+				<details class="advanced">
+					<summary>Advanced</summary>
+					<fieldset>
+						<legend>Hidden columns</legend>
+						<p class="hint">A hidden column is left out of API responses, the OpenAPI spec and MCP tools, and can't be written.</p>
+						<div class="chips">
+							for j, c := range t.Columns {
+								<label class="chip"><input type="checkbox" name={ fmt.Sprintf("%sc%dhidden", ti, j) } value="1" checked?={ c.Hidden }/> { c.Name }</label>
+							}
+						</div>
+					</fieldset>
+				</details>
+		}
+	</section>
+}
+
+templ columnRow(cj, ti string, t tabColumnsView, c columnView) {
+	<tr>
+		<td><strong>{ c.Name }</strong><input type="hidden" name={ cj } value={ c.Name }/></td>
+		<td>
+			<select name={ cj + "type" } aria-label={ "Type of " + c.Name }>
+				for _, o := range columnTypeOptions {
+					<option value={ o.Type } selected?={ c.Type == o.Type }>{ o.Label }</option>
+				}
+			</select>
+		</td>
+		<td><input type="checkbox" name={ cj + "required" } value="1" checked?={ c.Required } aria-label={ c.Name + " is required" }/></td>
+		<td><input type="radio" name={ ti + "key" } value={ c.Name } checked?={ c.Name == t.Key } aria-label={ c.Name + " is the key" }/></td>
+		<td class="muted sample">{ c.Sample }</td>
+	</tr>
+}
