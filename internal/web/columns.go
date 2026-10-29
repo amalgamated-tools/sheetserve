@@ -44,11 +44,13 @@ type tabColumnsView struct {
 	Key       string // the key column, or "" when the header has none
 	KeyRule   string // the key column the tab's rule names, shown when the header lacks it
 	Columns   []columnView
+	Missing   []columnView // saved columns that row 1 no longer has, renamed or removed in Sheets
 }
 
 type columnView struct {
 	Name, Type       string
 	Required, Hidden bool
+	New              bool   // in row 1 but not saved, on a tab whose columns were saved
 	Sample           string // the first value under the header, to help pick a type
 }
 
@@ -96,7 +98,8 @@ func (d *Dashboard) renderColumns(w http.ResponseWriter, r *http.Request, u user
 }
 
 // tabColumns describes a tab's columns for the columns page: the distinct names in its header,
-// with the types rule saved for them, or types guessed from rows if rule has none.
+// with the types rule saved for them, or types guessed from rows for the rest. Saved columns the
+// header no longer has are listed as missing, so a renamed one can pass its type on.
 func tabColumns(tab string, rule db.TabRule, header []string, rows [][]any) tabColumnsView {
 	t := tabColumnsView{Name: tab, Suggested: len(rule.Columns) == 0, KeyRule: rule.KeyColumn()}
 	if slices.Contains(header, rule.KeyColumn()) {
@@ -116,16 +119,35 @@ func tabColumns(tab string, rule db.TabRule, header []string, rows [][]any) tabC
 				}
 			}
 		}
-		if col, ok := rule.Columns[h]; ok {
+		col, saved := rule.Columns[h]
+		switch {
+		case saved:
 			c.Type, c.Required = col.Type, col.Required
-		} else if t.Suggested && h != t.Key {
-			c.Type = guessType(vals)
-		} else if h == t.Key && h == "id" {
+		case h == t.Key && h == "id":
 			c.Type = "string" // the server makes ids, and they are text
+		default:
+			c.Type = guessType(vals)
 		}
+		c.New = !saved && !t.Suggested
 		t.Columns = append(t.Columns, c)
 	}
+	for _, name := range slices.Sorted(maps.Keys(rule.Columns)) {
+		if !slices.Contains(header, name) {
+			col := rule.Columns[name]
+			t.Missing = append(t.Missing, columnView{Name: name, Type: col.Type, Required: col.Required})
+		}
+	}
 	return t
+}
+
+// typeLabel returns how the columns page names a column type.
+func typeLabel(typ string) string {
+	for _, o := range columnTypeOptions {
+		if o.Type == typ {
+			return o.Label
+		}
+	}
+	return typ
 }
 
 // guessType returns the column type every non-blank value in vals fits, or "" (any) when there are

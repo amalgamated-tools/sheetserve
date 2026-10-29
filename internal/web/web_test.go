@@ -560,6 +560,45 @@ func TestColumns(t *testing.T) {
 	}
 }
 
+// When a typed tab's header changes in Sheets, the columns page marks the new columns, with types
+// guessed from their rows, and lists the saved columns row 1 no longer has. Saving drops those.
+func TestColumnDrift(t *testing.T) {
+	fs := &fakeStore{tabs: map[string][][]any{"SS/People": {{"email", "age", "notes"}, {"ann@example.com", 41.0, "hi"}}}}
+	dash, srv := newTestDashboard(t, fs)
+	alice := signInAs(t, dash, srv, "alice")
+	post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"crm"}, "google_id": {"SS"}, "title": {"CRM"}})
+	if s, body := post(t, alice, srv.URL+"/app/sheets/columns", url.Values{"sheet": {"crm"}, "t0": {"People"}, "t0key": {"email"},
+		"t0c0": {"email"}, "t0c0type": {"string"}, "t0c1": {"age"}, "t0c1type": {"integer"}, "t0c1required": {"1"}, "t0c2": {"notes"}}); s != 303 {
+		t.Fatalf("save columns: %d %s", s, body)
+	}
+
+	// Someone renames age to years and adds phone in Sheets.
+	fs.tabs["SS/People"] = [][]any{{"email", "years", "notes", "phone"}, {"ann@example.com", 41.0, "hi", "555-0100"}}
+	s, body := get(t, alice, srv.URL+"/sheets/columns?sheet=crm", "")
+	for _, want := range []string{
+		`<strong>years</strong><input type="hidden" name="t0c1" value="years"> <span class="badge new">New</span>`,
+		`name="t0c1type" aria-label="Type of years"><option value="">Any</option><option value="string">Text</option><option value="number">Number</option><option value="integer" selected>`,
+		`<span class="badge new">New</span>`, `<td><s>age</s></td><td>Integer</td><td>Yes</td>`,
+		`<select class="renamed" data-type="integer" data-required aria-label="New name of age"><option value="">Removed</option> <option value="years">years</option><option value="phone">phone</option></select>`,
+		`src="/static/columns.js"`,
+	} {
+		if s != 200 || !strings.Contains(body, want) {
+			t.Errorf("columns page lacks %s: %d %s", want, s, body)
+		}
+	}
+	if strings.Contains(body, `<strong>notes</strong><input type="hidden" name="t0c2" value="notes"> <span class="badge new">`) || strings.Contains(body, "Types suggested") {
+		t.Errorf("saved columns marked new: %s", body)
+	}
+
+	if s, body := post(t, alice, srv.URL+"/app/sheets/columns", url.Values{"sheet": {"crm"}, "t0": {"People"}, "t0key": {"email"},
+		"t0c0": {"email"}, "t0c0type": {"string"}, "t0c1": {"years"}, "t0c1type": {"integer"}, "t0c2": {"notes"}, "t0c3": {"phone"}}); s != 303 {
+		t.Fatalf("save columns: %d %s", s, body)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets/columns?sheet=crm", ""); strings.Contains(body, "Not in row 1") || strings.Contains(body, "badge new") {
+		t.Errorf("drift left after saving: %s", body)
+	}
+}
+
 func TestGuessType(t *testing.T) {
 	for _, c := range []struct {
 		vals []any

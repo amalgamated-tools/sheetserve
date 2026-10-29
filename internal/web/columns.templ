@@ -3,7 +3,7 @@ package web
 import "fmt"
 
 templ columnsPageView(s shell, v columnsView) {
-	@layout(s) {
+	@layout(s, "/static/columns.js") {
 		<div class="page-head">
 			<a class="back" href={ templ.SafeURL(sheetsPage + "#sheet-" + v.Sheet) }>← Spreadsheets</a>
 			<h1>Columns of { v.Sheet }</h1>
@@ -49,6 +49,9 @@ templ tabColumnsCard(ti string, t tabColumnsView) {
 						}
 					</table>
 				</div>
+				if len(t.Missing) > 0 {
+					@missingColumns(t)
+				}
 				<details class="advanced">
 					<summary>Advanced</summary>
 					<fieldset>
@@ -66,8 +69,13 @@ templ tabColumnsCard(ti string, t tabColumnsView) {
 }
 
 templ columnRow(cj, ti string, t tabColumnsView, c columnView) {
-	<tr>
-		<td><strong>{ c.Name }</strong><input type="hidden" name={ cj } value={ c.Name }/></td>
+	<tr data-col={ c.Name }>
+		<td>
+			<strong>{ c.Name }</strong><input type="hidden" name={ cj } value={ c.Name }/>
+			if c.New {
+				<span class="badge new">New</span>
+			}
+		</td>
 		<td>
 			<select name={ cj + "type" } aria-label={ "Type of " + c.Name }>
 				for _, o := range columnTypeOptions {
@@ -79,4 +87,37 @@ templ columnRow(cj, ti string, t tabColumnsView, c columnView) {
 		<td><input type="radio" name={ ti + "key" } value={ c.Name } checked?={ c.Name == t.Key } aria-label={ c.Name + " is the key" }/></td>
 		<td class="muted sample">{ c.Sample }</td>
 	</tr>
+}
+
+// missingColumns lists a tab's saved columns that row 1 no longer has. Saving drops them; picking
+// the column one was renamed to has columns.js copy its type, Required box and key onto it.
+templ missingColumns(t tabColumnsView) {
+	<div class="missing">
+		<p><strong>Not in row 1 any more.</strong> These columns were renamed or removed in Google Sheets. Saving drops them; if one was renamed, pick its new name to keep its settings.</p>
+		<table class="columns">
+			<tr><th>Column</th><th>Type</th><th>Required</th><th>Renamed to</th></tr>
+			for _, m := range t.Missing {
+				<tr>
+					<td><s>{ m.Name }</s></td>
+					<td>{ typeLabel(m.Type) }</td>
+					<td>
+						if m.Required {
+							Yes
+						}
+					</td>
+					<td>
+						// The menu has no name, so it is never posted.
+						<select class="renamed" data-type={ m.Type } data-required?={ m.Required } data-key?={ m.Name == t.KeyRule } aria-label={ "New name of " + m.Name }>
+							<option value="">Removed</option>
+							for _, c := range t.Columns {
+								if c.New {
+									<option value={ c.Name }>{ c.Name }</option>
+								}
+							}
+						</select>
+					</td>
+				</tr>
+			}
+		</table>
+	</div>
 }
