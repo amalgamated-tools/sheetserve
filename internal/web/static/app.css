@@ -101,3 +101,6 @@ details.advanced summary { cursor: pointer; color: var(--muted); font-weight: 60
 .tab-name { display: flex; gap: .5rem; align-items: center; font-weight: 600; }
 table.builder th:nth-child(5) { width: 3rem; }
 table.builder td input:not([type=checkbox], [type=radio]), table.builder select { width: 100%; min-width: 0; }
+.badge.new { background: var(--accent-soft); color: var(--accent); margin-left: .35rem; }
+.missing { margin-top: .75rem; padding: .5rem .75rem; border: 1px dashed var(--border); border-radius: 7px; }
+.missing s { color: var(--muted); }
