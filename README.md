@@ -42,6 +42,9 @@ Environment variables:
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
 | `PORT` | Optional. Listen port. Defaults to `8085`. |
 | `OTEL_*` | Optional. The standard OpenTelemetry variables, such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. Traces, metrics and logs export over OTLP. Set `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` to `none` to turn one off. |
+| `SHEETSERVE_GOOGLE_READS_PER_MINUTE`, `SHEETSERVE_GOOGLE_WRITES_PER_MINUTE` | Optional. Your Cloud project's Google Sheets API quotas. Default `300` each. See [Google quotas](#google-quotas). |
+| `SHEETSERVE_GOOGLE_USER_READS_PER_MINUTE`, `SHEETSERVE_GOOGLE_USER_WRITES_PER_MINUTE` | Optional. The per-user quotas. Default `60` each. |
+| `SHEETSERVE_GOOGLE_KEY_READS_PER_MINUTE`, `SHEETSERVE_GOOGLE_KEY_WRITES_PER_MINUTE` | Optional. How much of its user's quota one API key may use. Default `30` each. `0` turns any of these off. |
 | `LOG_LEVEL` | Optional. `debug`, `info`, `warn` or `error`. Defaults to `info`. `debug` adds a line for each Google Sheets call and each cache hit, miss and invalidation. |
 
 ```sh
@@ -147,12 +150,29 @@ A successful create returns `201`. Errors use these status codes:
 | `403` | The key or the tab does not allow the operation, or the tab has no key column |
 | `404` | An unknown tab or row |
 | `409` | A create with a key value that exists, a key value that more than one row holds, or rows that kept moving during an update or delete |
+| `429` | A Google quota is used up. `Retry-After` says when to try again. See [Google quotas](#google-quotas). |
 | `502` | A Google API error |
 
 Error bodies look like `{"error": "..."}`. Google API error details go to the log only.
 
 Writes send every string as text, so the server never runs client data as a formula or reads it as a number or date. An update changes only the cells you send,
 so formulas in other columns stay in place.
+
+## Google quotas
+
+The Sheets API allows each Cloud project a number of read and write requests a minute, and each Google user a smaller number.
+They are under IAM & Admin, Quotas, in the Cloud Console. The server keeps every call to Google under 90% of them, so Google
+doesn't refuse calls:
+
+- One read and one write budget for the project, one for each user, and one for each API key, so a busy key can't use its
+  user's whole quota.
+- Only calls to Google count. A read the cache answers costs nothing.
+- A call waits up to 2 seconds for room. Past that, the API returns `429` with a `Retry-After` header that says when there is
+  room, and the dashboard says so.
+- If Google returns `429` anyway, the call is tried twice more, after about 1 and 2 seconds.
+
+The `google.limiter.waited`, `google.limiter.refused` and `google.rate_limited` metrics count each case by kind (`read` or
+`write`) and budget (`project`, `user` or `key`). If you raise a quota in the Cloud Console, raise its variable too.
 
 ## Browsers (CORS)
 

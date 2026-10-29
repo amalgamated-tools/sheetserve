@@ -17,6 +17,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 const Version = "0.1.0"
@@ -137,14 +138,14 @@ func endpoint(op string, h handlerFunc) http.Handler {
 			if !a.settings.Can(key, sheet, tab, op) {
 				return 0, nil, &service.APIError{Status: http.StatusForbidden, Msg: op + " not allowed on " + sheet + "/" + tab}
 			}
-			return h(a, r, sheet, tab)
+			return h(a, r.WithContext(store.WithCaller(r.Context(), key.Hash)), sheet, tab)
 		}()
 		reason := ""
 		if err != nil {
 			status, body, reason = errorResponse(err)
 		}
 		if status == http.StatusTooManyRequests {
-			w.Header().Set("Retry-After", "60") // Google's read quota is per minute
+			w.Header().Set("Retry-After", retryAfter(err))
 		}
 		if p, ok := body.(page); ok {
 			w.Header().Set("X-Total-Count", strconv.Itoa(p.total))
@@ -161,11 +162,15 @@ func endpoint(op string, h handlerFunc) http.Handler {
 }
 
 // errorResponse hides upstream (Google) error details from callers; they are only logged.
-// Google's rate limit passes through as 429 so clients know to back off.
+// Running out of Google quota, whether the server's limiter or Google says so, is 429 so clients
+// know to back off.
 func errorResponse(err error) (status int, body any, reason string) {
 	var ae *service.APIError
 	if errors.As(err, &ae) {
 		return ae.Status, map[string]string{"error": ae.Msg}, ae.Msg
+	}
+	if rl, ok := errors.AsType[*store.RateLimitError](err); ok {
+		return http.StatusTooManyRequests, map[string]string{"error": rl.Error()}, rl.Error()
 	}
 	if gerr, ok := errors.AsType[*googleapi.Error](err); ok && gerr.Code == http.StatusTooManyRequests {
 		return http.StatusTooManyRequests, map[string]string{"error": "Google Sheets rate limit reached; retry in a minute"}, err.Error()
@@ -253,4 +258,13 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		slog.Error("write response", "err", err)
 	}
+}
+
+// retryAfter returns the Retry-After seconds for a 429 caused by err: when the limiter has room
+// again, rounded up, or a minute, the length of Google's quota window.
+func retryAfter(err error) string {
+	if rl, ok := errors.AsType[*store.RateLimitError](err); ok {
+		return strconv.Itoa(rl.Seconds())
+	}
+	return "60"
 }

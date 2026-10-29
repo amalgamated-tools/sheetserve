@@ -17,6 +17,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/testutil/oteltest"
 )
 
@@ -716,5 +717,31 @@ func TestTotalCount(t *testing.T) {
 	}
 	if _, spec := call(t, h, "GET", "/openapi.json", "admin-key", ""); !strings.Contains(spec, `"headers":{"X-Total-Count":`) {
 		t.Errorf("spec has no X-Total-Count: %s", spec)
+	}
+}
+
+// limitedStore refuses every read the way the server's Google quota limiter does.
+type limitedStore struct{ fakeStore }
+
+func (*limitedStore) Read(context.Context, string, string) ([][]any, error) {
+	return nil, &store.RateLimitError{RetryAfter: 2500 * time.Millisecond}
+}
+
+// A call the limiter refuses is a 429 whose Retry-After says when there's room again.
+func TestRateLimited(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{"Orders": {Ops: []string{"read"}}}}},
+		Keys:         []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, service.New(cfg, &limitedStore{}, 0)).Mux()
+	req := httptest.NewRequest("GET", "/v1/shop/Orders", nil)
+	req.Header.Set("Authorization", "Bearer admin-key")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 429 || rec.Header().Get("Retry-After") != "3" || !strings.Contains(rec.Body.String(), "quota reached; retry in 3s") {
+		t.Errorf("got %d, Retry-After %q: %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
 	}
 }
