@@ -1,11 +1,13 @@
 // Package version holds build-time identifying information, injected via
-// -ldflags -X at compile time (see Dockerfile and Dockerfile.worker). Both
+// -ldflags -X at compile time (see Dockerfile), or for Commit read from
+// RENDER_GIT_COMMIT at startup. Both
 // vars keep their zero-value defaults for `go run`/`go test` and any build
 // that doesn't pass the flags.
 package version
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -17,6 +19,18 @@ var (
 	// Commit is the short git commit SHA this binary was built from.
 	Commit = "unknown"
 )
+
+// Render sets RENDER_GIT_COMMIT on a running service, so a build that wasn't given the commit still
+// says which one it is.
+func init() { Commit = commitOr(Commit, os.Getenv("RENDER_GIT_COMMIT")) }
+
+// commitOr returns commit, or the short form of sha when commit is "unknown" and sha is set.
+func commitOr(commit, sha string) string {
+	if commit != "unknown" || sha == "" {
+		return commit
+	}
+	return sha[:min(len(sha), 7)]
+}
 
 // Started is when this process booted. It's captured at package
 // initialization, which happens before main and before any server or worker

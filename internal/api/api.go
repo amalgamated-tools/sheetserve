@@ -109,6 +109,7 @@ func CORS(origins []string, next http.Handler) http.Handler {
 		}
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
+		h.Set("Access-Control-Expose-Headers", "X-Total-Count") // so browser apps can page through a list
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id")
@@ -144,6 +145,10 @@ func endpoint(op string, h handlerFunc) http.Handler {
 		}
 		if status == http.StatusTooManyRequests {
 			w.Header().Set("Retry-After", "60") // Google's read quota is per minute
+		}
+		if p, ok := body.(page); ok {
+			w.Header().Set("X-Total-Count", strconv.Itoa(p.total))
+			body = p.rows
 		}
 		writeJSON(w, status, body)
 		keyName := ""
@@ -188,8 +193,15 @@ func (a *API) list(r *http.Request, sheet, tab string) (int, any, error) {
 			return 0, nil, service.BadRequest("invalid %s", k)
 		}
 	}
-	rows, err := a.svc.List(r.Context(), sheet, tab, filter, sort, limit, offset)
-	return http.StatusOK, rows, err
+	rows, total, err := a.svc.List(r.Context(), sheet, tab, filter, sort, limit, offset)
+	return http.StatusOK, page{rows, total}, err
+}
+
+// page is a list's rows, with how many rows matched before limit and offset, which the response
+// sends as X-Total-Count.
+type page struct {
+	rows  []map[string]any
+	total int
 }
 
 func (a *API) get(r *http.Request, sheet, tab string) (int, any, error) {

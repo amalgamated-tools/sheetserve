@@ -201,7 +201,8 @@ func (a *API) addTabTools(srv *mcp.Server, key *db.Key, name, sheet, tab, rowKey
 					Offset int               `json:"offset"`
 				},
 				) (any, error) {
-					return a.svc.List(ctx, sheet, tab, in.Filter, in.Sort, in.Limit, in.Offset)
+					rows, _, err := a.svc.List(ctx, sheet, tab, in.Filter, in.Sort, in.Limit, in.Offset)
+					return rows, err
 				})
 			if rowKey != "" {
 				addTool(srv, key, name+"_get", "Get one row in "+where+" by its "+rowKey+".", idSchema,

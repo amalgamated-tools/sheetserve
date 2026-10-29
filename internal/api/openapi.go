@@ -71,6 +71,8 @@ func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 					}
 				}
 				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
+				list["responses"].(obj)["200"].(obj)["headers"] = obj{"X-Total-Count": obj{
+					"description": "how many rows match the filters, before limit and offset", "schema": obj{"type": "integer"}}}
 				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
 					strings.Join(service.FilterOperators(), ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case."
 				coll["get"] = list
