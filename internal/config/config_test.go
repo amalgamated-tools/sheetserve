@@ -4,8 +4,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 // setRequired sets every required variable to a valid value.
@@ -50,6 +53,29 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("PORT", "")
 	if c, err := FromEnv(); err != nil || c.Port != 8085 {
 		t.Errorf("default port: %v %v", c, err)
+	}
+
+	// The Google quotas default to the Sheets API's own, and 0 turns one off.
+	if c, err = FromEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if c.ProjectQuota != (store.Quota{ReadsPerMinute: 300, WritesPerMinute: 300}) ||
+		c.UserQuota != (store.Quota{ReadsPerMinute: 60, WritesPerMinute: 60}) || c.KeyQuota != (store.Quota{ReadsPerMinute: 30, WritesPerMinute: 30}) {
+		t.Errorf("default quotas: %+v %+v %+v", c.ProjectQuota, c.UserQuota, c.KeyQuota)
+	}
+	t.Setenv("SHEETSERVE_GOOGLE_READS_PER_MINUTE", "600")
+	t.Setenv("SHEETSERVE_GOOGLE_KEY_WRITES_PER_MINUTE", "0")
+	if c, err = FromEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if c.ProjectQuota.ReadsPerMinute != 600 || c.KeyQuota.WritesPerMinute != 0 {
+		t.Errorf("set quotas: %+v %+v", c.ProjectQuota, c.KeyQuota)
+	}
+	for _, v := range []string{"lots", "-1"} {
+		t.Setenv("SHEETSERVE_GOOGLE_USER_READS_PER_MINUTE", v)
+		if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "SHEETSERVE_GOOGLE_USER_READS_PER_MINUTE") {
+			t.Errorf("bad quota %q: %v", v, err)
+		}
 	}
 }
 

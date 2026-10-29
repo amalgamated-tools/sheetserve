@@ -13,6 +13,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,11 +24,12 @@ func (a *API) mcpHandler() http.Handler {
 		return a.mcpServer(r.Context(), a.settings.KeyFor(bearer(r)))
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.settings.KeyFor(bearer(r)) == nil {
+		key := a.settings.KeyFor(bearer(r))
+		if key == nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API key"})
 			return
 		}
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, r.WithContext(store.WithCaller(r.Context(), key.Hash)))
 	})
 }
 

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 var (
@@ -39,9 +41,27 @@ type Config struct {
 	CacheTTL    time.Duration // SHEETSERVE_CACHE_TTL
 	CORSOrigins []string      // SHEETSERVE_CORS_ORIGINS
 	Port        int           // PORT
+
+	// Google Sheets API per-minute quotas the server keeps under; 0 means no limit.
+	ProjectQuota store.Quota // SHEETSERVE_GOOGLE_READS_PER_MINUTE, SHEETSERVE_GOOGLE_WRITES_PER_MINUTE
+	UserQuota    store.Quota // SHEETSERVE_GOOGLE_USER_READS_PER_MINUTE, SHEETSERVE_GOOGLE_USER_WRITES_PER_MINUTE
+	KeyQuota     store.Quota // SHEETSERVE_GOOGLE_KEY_READS_PER_MINUTE, SHEETSERVE_GOOGLE_KEY_WRITES_PER_MINUTE
 }
 
-// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL and SHEETSERVE_CORS_ORIGINS.
+// perMinute reads a per-minute quota from the environment variable name, or def when it's unset.
+func perMinute(name string, def int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s: want a number of calls per minute such as %d, or 0 for no limit, got %q", name, def, v)
+	}
+	return n, nil
+}
+
+// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
 func FromEnv() (*Config, error) {
 	c := Config{
 		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), os.Getenv("RENDER_EXTERNAL_URL"), "http://localhost:8085"),
@@ -69,6 +89,24 @@ func FromEnv() (*Config, error) {
 			return nil, fmt.Errorf("SHEETSERVE_CACHE_TTL: want a duration such as 60s, got %q", ttl)
 		}
 		c.CacheTTL = d
+	}
+	// The Sheets API's default quotas: 300 reads and 300 writes a minute per project, and 60 of each per
+	// user. A key gets half its user's, so one busy key can't starve its user's others.
+	for _, q := range []struct {
+		dst  *int
+		name string
+		def  int
+	}{
+		{&c.ProjectQuota.ReadsPerMinute, "SHEETSERVE_GOOGLE_READS_PER_MINUTE", 300},
+		{&c.ProjectQuota.WritesPerMinute, "SHEETSERVE_GOOGLE_WRITES_PER_MINUTE", 300},
+		{&c.UserQuota.ReadsPerMinute, "SHEETSERVE_GOOGLE_USER_READS_PER_MINUTE", 60},
+		{&c.UserQuota.WritesPerMinute, "SHEETSERVE_GOOGLE_USER_WRITES_PER_MINUTE", 60},
+		{&c.KeyQuota.ReadsPerMinute, "SHEETSERVE_GOOGLE_KEY_READS_PER_MINUTE", 30},
+		{&c.KeyQuota.WritesPerMinute, "SHEETSERVE_GOOGLE_KEY_WRITES_PER_MINUTE", 30},
+	} {
+		if *q.dst, err = perMinute(q.name, q.def); err != nil {
+			return nil, err
+		}
 	}
 	for o := range strings.SplitSeq(os.Getenv("SHEETSERVE_CORS_ORIGINS"), ",") {
 		if o = strings.TrimSpace(o); o != "" {

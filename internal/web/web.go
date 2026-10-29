@@ -20,6 +20,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	"github.com/amalgamated-tools/sheetserve/internal/service"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
 )
 
@@ -194,6 +195,9 @@ func userMessage(err error) string {
 func googleDetail(err error) string {
 	if gerr, ok := errors.AsType[*googleapi.Error](err); ok {
 		return fmt.Sprintf(" (%d: %s)", gerr.Code, gerr.Message)
+	}
+	if rl, ok := errors.AsType[*store.RateLimitError](err); ok {
+		return " (" + rl.Error() + ")"
 	}
 	return ""
 }

@@ -66,6 +66,7 @@ type Server struct {
 	db      *db.DB
 	auth    *auth.Google
 	tenants *tenancy.Tenants
+	limiter *store.Limiter // keeps every user's Google calls under the Sheets API quotas
 	dash    *web.Dashboard
 
 	httpServer    *http.Server
@@ -95,6 +96,7 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 		RedirectURL:  strings.TrimSuffix(s.cfg.BaseURL, "/") + "/auth/callback",
 		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
 	})
+	s.limiter = store.NewLimiter(s.cfg.ProjectQuota, s.cfg.UserQuota, s.cfg.KeyQuota)
 	s.tenants = &tenancy.Tenants{DB: s.db, Global: s.cfg, NewStore: s.newStore}
 	s.auth.OnSignIn = s.tenants.Invalidate // pick up the new refresh token
 	s.dash = &web.Dashboard{
@@ -105,13 +107,17 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 	return s, nil
 }
 
-// newStore reaches Google Sheets with userID's own credentials.
+// newStore reaches Google Sheets with userID's own credentials, within the server's quotas.
 func (s *Server) newStore(userID int64) (store.Store, error) {
 	ts, err := s.auth.TokenSource(userID)
 	if err != nil {
 		return nil, err
 	}
-	return store.NewGoogleStore(context.Background(), option.WithTokenSource(ts))
+	g, err := store.NewGoogleStore(context.Background(), option.WithTokenSource(ts))
+	if err != nil {
+		return nil, err
+	}
+	return store.Limit(g, s.limiter, userID), nil
 }
 
 // setupRoutes sends each request to sign-in, the per-user API, or the dashboard.
