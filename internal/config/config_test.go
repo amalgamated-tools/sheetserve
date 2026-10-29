@@ -31,7 +31,7 @@ func TestFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listen != "9000" || c.CacheTTL != 90*time.Second || len(c.DecryptedSecret) != 32 ||
+	if c.Port != 9000 || c.CacheTTL != 90*time.Second || len(c.DecryptedSecret) != 32 ||
 		!slices.Equal(c.CORSOrigins, []string{"https://a.example", "https://b.example"}) {
 		t.Errorf("FromEnv: %+v", c)
 	}
@@ -39,6 +39,17 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("SHEETSERVE_CACHE_TTL", "soon")
 	if _, err := FromEnv(); err == nil {
 		t.Error("bad SHEETSERVE_CACHE_TTL accepted")
+	}
+	t.Setenv("SHEETSERVE_CACHE_TTL", "")
+	for _, port := range []string{"http", "0", "70000"} {
+		t.Setenv("PORT", port)
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("bad PORT %q accepted", port)
+		}
+	}
+	t.Setenv("PORT", "")
+	if c, err := FromEnv(); err != nil || c.Port != 8085 {
+		t.Errorf("default port: %v %v", c, err)
 	}
 }
 

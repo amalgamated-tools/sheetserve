@@ -61,6 +61,7 @@ func realMain(ctx context.Context) error {
 		ctx,
 		server.WithConfig(cfg),
 		server.WithDB(d),
+		server.WithPort(cfg.Port),
 	)
 	if err != nil {
 		return err

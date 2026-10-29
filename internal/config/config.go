@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,7 +38,7 @@ type Config struct {
 	DatabaseURL string        // SHEETSERVE_DATABASE_URL
 	CacheTTL    time.Duration // SHEETSERVE_CACHE_TTL
 	CORSOrigins []string      // SHEETSERVE_CORS_ORIGINS
-	Listen      string        // PORT
+	Port        int           // PORT
 }
 
 // FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL and SHEETSERVE_CORS_ORIGINS.
@@ -54,7 +55,12 @@ func FromEnv() (*Config, error) {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	c.Listen = cmp.Or(os.Getenv("PORT"), "8085")
+	port := cmp.Or(os.Getenv("PORT"), "8085")
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return nil, fmt.Errorf("PORT: want a port number such as 8085, got %q", port)
+	}
+	c.Port = p
 	c.DatabaseURL = cmp.Or(os.Getenv("SHEETSERVE_DB"), "sheetserve.db")
 
 	if ttl := os.Getenv("SHEETSERVE_CACHE_TTL"); ttl != "" {
