@@ -68,8 +68,11 @@ The first time, the page suggests a type for each column from the first 50 rows.
 | True/false | `true` or `false` |
 | Date | A string such as `2026-01-31` |
 | Date and time | An RFC 3339 string such as `2026-01-31T09:30:00Z` |
+| One of | One of the values you list, such as `draft, live, retired`. Picking it fills in the values the column already holds. |
 
 - A create or update with a value of the wrong type returns `400`. So does a create without a required column.
+- A column can have a default, which a create that leaves the column out gets. A required column with a default can be left out.
+  The key column can't have one. Defaults apply to hidden columns too, so a hidden `source` column can default to `api`.
 - `null` empties a cell, except in a required column. `""` empties a Text or Any column only.
 - Reads return each value as its column's type. A blank cell reads as `null`, and a number stored as text reads as a number.
   A cell edited by hand to a value that doesn't fit, such as `n/a` in a Number column, comes back as it is.

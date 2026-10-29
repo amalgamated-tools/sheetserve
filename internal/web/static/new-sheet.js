@@ -16,6 +16,8 @@ function renumber() {
       name.name = cj;
       row.querySelector("[data-f=type]").name = cj + "type";
       row.querySelector("[data-f=required]").name = cj + "required";
+      row.querySelector("[data-f=default]").name = cj + "default";
+      row.querySelector(".enum-options").name = cj + "options";
       row.querySelector("[data-f=key]").value = name.value.trim();
     });
   });

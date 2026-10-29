@@ -106,10 +106,10 @@ func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 // filterSchema is the schema of a filter's value on a column of type c using op. contains matches
 // text, and a filter value is never null.
 func filterSchema(c db.Column, op string) obj {
-	if op == "contains" || c.Type == "" {
+	if op == "contains" || c.Type == "" || (c.Type == "enum" && op != "eq" && op != "ne") {
 		return obj{"type": "string"}
 	}
-	c.Required = true
+	c.Required, c.Default = true, ""
 	return valueSchema(c)
 }
 

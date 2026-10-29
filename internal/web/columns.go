@@ -16,6 +16,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
 	"github.com/amalgamated-tools/sheetserve/internal/rbac"
+	"github.com/amalgamated-tools/sheetserve/internal/service"
 )
 
 // sampleRows is how many rows under the header the columns page reads to suggest types.
@@ -30,6 +31,7 @@ var columnTypeOptions = []struct{ Type, Label string }{
 	{"boolean", "True/false"},
 	{"date", "Date"},
 	{"datetime", "Date and time"},
+	{"enum", "One of"},
 }
 
 type columnsView struct {
@@ -52,7 +54,13 @@ type columnView struct {
 	Required, Hidden bool
 	New              bool   // in row 1 but not saved, on a tab whose columns were saved
 	Sample           string // the first value under the header, to help pick a type
+	Options          string // an enum's values, comma-separated
+	Default          string
+	Values           string // the distinct values under the header, comma-separated, to fill in an enum's
 }
+
+// maxEnumValues is how many distinct values the columns page offers to fill in an enum's values.
+const maxEnumValues = 20
 
 func columnsURL(sheet string) string { return columnsPage + "?sheet=" + url.QueryEscape(sheet) }
 
@@ -122,10 +130,11 @@ func tabColumns(tab string, rule db.TabRule, header []string, rows [][]any) tabC
 				}
 			}
 		}
+		c.Values = distinctValues(vals)
 		col, saved := rule.Columns[h]
 		switch {
 		case saved:
-			c.Type, c.Required = col.Type, col.Required
+			c.Type, c.Required, c.Options, c.Default = col.Type, col.Required, strings.Join(col.Options, ", "), col.Default
 		case h == t.Key && h == "id":
 			c.Type = "string" // the server makes ids, and they are text
 		default:
@@ -137,10 +146,28 @@ func tabColumns(tab string, rule db.TabRule, header []string, rows [][]any) tabC
 	for _, name := range slices.Sorted(maps.Keys(rule.Columns)) {
 		if !slices.Contains(header, name) {
 			col := rule.Columns[name]
-			t.Missing = append(t.Missing, columnView{Name: name, Type: col.Type, Required: col.Required})
+			t.Missing = append(t.Missing, columnView{Name: name, Type: col.Type, Required: col.Required,
+				Options: strings.Join(col.Options, ", "), Default: col.Default})
 		}
 	}
 	return t
+}
+
+// distinctValues lists the distinct non-blank text values in vals, comma-separated, or "" when
+// there are more than maxEnumValues or one holds a comma, which an enum's values can't.
+func distinctValues(vals []any) string {
+	var out []string
+	for _, v := range vals {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if v == nil || s == "" || slices.Contains(out, s) {
+			continue
+		}
+		if strings.Contains(s, ",") || len(out) == maxEnumValues {
+			return ""
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, ", ")
 }
 
 // typeLabel returns how the columns page names a column type.
@@ -217,6 +244,23 @@ type tabForm struct {
 type columnForm struct {
 	Name, Type       string
 	Required, Hidden bool
+	Options          string // an enum's values, comma-separated
+	Default          string
+}
+
+// options returns an enum's values from the comma-separated list c.Options, trimmed and without
+// repeats. Other types have none.
+func (c columnForm) options() []string {
+	if c.Type != "enum" {
+		return nil
+	}
+	var out []string
+	for o := range strings.SplitSeq(c.Options, ",") {
+		if o = strings.TrimSpace(o); o != "" && !slices.Contains(out, o) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // parseTabs reads the tabs a form lists. Inputs are numbered, since tab and column names can hold
@@ -238,7 +282,8 @@ func parseTabs(form url.Values) []tabForm {
 			}
 			if name := strings.TrimSpace(form.Get(cj)); name != "" {
 				t.Columns = append(t.Columns, columnForm{Name: name, Type: form.Get(cj + "type"),
-					Required: form.Get(cj+"required") != "", Hidden: form.Get(cj+"hidden") != ""})
+					Required: form.Get(cj+"required") != "", Hidden: form.Get(cj+"hidden") != "",
+					Options: form.Get(cj + "options"), Default: strings.TrimSpace(form.Get(cj + "default"))})
 			}
 		}
 		tabs = append(tabs, t)
@@ -252,7 +297,14 @@ func (t tabForm) rule() (db.TabRule, error) {
 		if _, dup := rule.Columns[c.Name]; dup {
 			return rule, fmt.Errorf("%s: column %q is listed twice", t.Name, c.Name)
 		}
-		rule.Columns[c.Name] = db.Column{Type: c.Type, Required: c.Required}
+		col := db.Column{Type: c.Type, Required: c.Required, Options: c.options(), Default: c.Default}
+		if err := service.CheckColumn(c.Name, col); err != nil {
+			return rule, fmt.Errorf("%s: %w", t.Name, err)
+		}
+		if c.Default != "" && (c.Name == t.Key || (t.Key == "" && c.Name == "id")) {
+			return rule, fmt.Errorf("%s: the key column %s can't have a default, since each row's key is different", t.Name, c.Name)
+		}
+		rule.Columns[c.Name] = col
 		if c.Hidden {
 			rule.Hidden = append(rule.Hidden, c.Name)
 		}

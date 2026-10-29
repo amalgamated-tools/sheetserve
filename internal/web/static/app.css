@@ -92,15 +92,19 @@ td input:not([type=checkbox], [type=radio]) { width: 100%; min-width: 9rem; }
 
 .error-text { color: var(--danger); }
 table.columns { table-layout: fixed; }
-table.columns th:nth-child(1) { width: 26%; }
-table.columns th:nth-child(2) { width: 24%; }
-table.columns th:nth-child(3), table.columns th:nth-child(4) { width: 12%; }
+table.columns th:nth-child(1) { width: 22%; }
+table.columns th:nth-child(2) { width: 22%; }
+table.columns th:nth-child(3), table.columns th:nth-child(5) { width: 10%; }
+table.columns th:nth-child(4) { width: 16%; }
 td.sample { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.advanced { margin-top: .75rem; }
 details.advanced summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: .9rem; }
 .tab-name { display: flex; gap: .5rem; align-items: center; font-weight: 600; }
-table.builder th:nth-child(5) { width: 3rem; }
+table.builder th:nth-child(6) { width: 3rem; }
 table.builder td input:not([type=checkbox], [type=radio]), table.builder select { width: 100%; min-width: 0; }
 .badge.new { background: var(--accent-soft); color: var(--accent); margin-left: .35rem; }
 .missing { margin-top: .75rem; padding: .5rem .75rem; border: 1px dashed var(--border); border-radius: 7px; }
 .missing s { color: var(--muted); }
+.enum-options { display: block; width: 100%; margin-top: .35rem; }
+.enum-options[hidden] { display: none; }
+table.columns td input:not([type=checkbox], [type=radio]), table.columns select { width: 100%; min-width: 0; }

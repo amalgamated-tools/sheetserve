@@ -340,8 +340,8 @@ func (d *DB) SaveColumns(ctx context.Context, userID int64, sheet string, tabs m
 func insertColumns(ctx context.Context, tx *sql.Tx, userID int64, sheet, tab string, cols map[string]Column) error {
 	for _, name := range slices.Sorted(maps.Keys(cols)) {
 		c := cols[name]
-		if _, err := tx.ExecContext(ctx, `INSERT INTO columns (user_id, sheet, tab, name, type, required) VALUES (?, ?, ?, ?, ?, ?)`,
-			userID, sheet, tab, name, c.Type, c.Required); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO columns (user_id, sheet, tab, name, type, required, options, default_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			userID, sheet, tab, name, c.Type, c.Required, jsonList(c.Options), c.Default); err != nil {
 			if strings.Contains(err.Error(), "CHECK constraint failed") {
 				return ValidationError(fmt.Sprintf("column %q: unknown type %q", name, c.Type))
 			}
@@ -409,11 +409,17 @@ func userSettings(ctx context.Context, q querier, userID int64) (*Settings, erro
 		})
 	}
 	if err == nil {
-		err = scan(ctx, q, `SELECT sheet, tab, name, type, required FROM columns WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
-			var sheet, tab, name string
+		err = scan(ctx, q, `SELECT sheet, tab, name, type, required, options, default_value FROM columns WHERE user_id = ?`, userID, func(rows *sql.Rows) error {
+			var sheet, tab, name, options string
 			var c Column
-			if err := rows.Scan(&sheet, &tab, &name, &c.Type, &c.Required); err != nil {
+			if err := rows.Scan(&sheet, &tab, &name, &c.Type, &c.Required, &options, &c.Default); err != nil {
 				return err
+			}
+			if err := json.Unmarshal([]byte(options), &c.Options); err != nil {
+				return err
+			}
+			if len(c.Options) == 0 {
+				c.Options = nil
 			}
 			rule := settings.Spreadsheets[sheet].Tabs[tab]
 			if rule.Columns == nil {

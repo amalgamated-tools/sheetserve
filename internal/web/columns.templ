@@ -40,12 +40,12 @@ templ tabColumnsCard(ti string, t tabColumnsView) {
 				}
 				<div class="table-wrap">
 					<table class="columns">
-						<tr><th>Column</th><th>Type</th><th>Required</th><th>Key</th><th>First value</th></tr>
+						<tr><th>Column</th><th>Type</th><th>Required</th><th>Default</th><th>Key</th><th>First value</th></tr>
 						for j, c := range t.Columns {
 							@columnRow(fmt.Sprintf("%sc%d", ti, j), ti, t, c)
 						}
 						if t.Key == "" {
-							<tr><td colspan="3"></td><td><label><input type="radio" name={ ti + "key" } value="" checked/> None</label></td><td></td></tr>
+							<tr><td colspan="4"></td><td><label><input type="radio" name={ ti + "key" } value="" checked/> None</label></td><td></td></tr>
 						}
 					</table>
 				</div>
@@ -77,13 +77,15 @@ templ columnRow(cj, ti string, t tabColumnsView, c columnView) {
 			}
 		</td>
 		<td>
-			<select name={ cj + "type" } aria-label={ "Type of " + c.Name }>
+			<select class="col-type" name={ cj + "type" } aria-label={ "Type of " + c.Name }>
 				for _, o := range columnTypeOptions {
 					<option value={ o.Type } selected?={ c.Type == o.Type }>{ o.Label }</option>
 				}
 			</select>
+			@enumOptions(cj, c.Options, c.Values, c.Type)
 		</td>
 		<td><input type="checkbox" name={ cj + "required" } value="1" checked?={ c.Required } aria-label={ c.Name + " is required" }/></td>
+		<td><input name={ cj + "default" } value={ c.Default } aria-label={ "Default for " + c.Name }/></td>
 		<td><input type="radio" name={ ti + "key" } value={ c.Name } checked?={ c.Name == t.Key } aria-label={ c.Name + " is the key" }/></td>
 		<td class="muted sample">{ c.Sample }</td>
 	</tr>
@@ -107,7 +109,7 @@ templ missingColumns(t tabColumnsView) {
 					</td>
 					<td>
 						// The menu has no name, so it is never posted.
-						<select class="renamed" data-type={ m.Type } data-required?={ m.Required } data-key?={ m.Name == t.KeyRule } aria-label={ "New name of " + m.Name }>
+						<select class="renamed" data-type={ m.Type } data-required?={ m.Required } data-key?={ m.Name == t.KeyRule } data-options={ m.Options } data-default={ m.Default } aria-label={ "New name of " + m.Name }>
 							<option value="">Removed</option>
 							for _, c := range t.Columns {
 								if c.New {
@@ -120,4 +122,10 @@ templ missingColumns(t tabColumnsView) {
 			}
 		</table>
 	</div>
+}
+
+// enumOptions is the box for an enum's values, under its type menu. app.js shows it while the menu
+// says One of, and fills it from values, the column's distinct values, if it's empty.
+templ enumOptions(cj, options, values, typ string) {
+	<input class="enum-options" name={ cj + "options" } value={ options } data-values={ values } placeholder="draft, live, retired" aria-label="Values, comma-separated" hidden?={ typ != "enum" }/>
 }
