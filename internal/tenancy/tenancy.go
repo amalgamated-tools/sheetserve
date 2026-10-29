@@ -94,7 +94,7 @@ func (ts *Tenants) tenant(ctx context.Context, userID int64) (*tenant, error) {
 	svc := service.New(settings, st, ts.Global.CacheTTL)
 	// Requests still running on a replaced tenant hold its tab locks, so every rebuild shares them,
 	// and keeps the tabs already read.
-	svc.UseCache(ts.cache)
+	svc.UseCache(ts.cache, userID)
 	t := &tenant{api.New(settings, svc), svc}
 	ts.tenants[userID] = t
 	return t, nil

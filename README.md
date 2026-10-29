@@ -204,8 +204,8 @@ CI (`.github/workflows/ci.yml`) runs `mise run check` and `mise run build` on pu
 ## Known limits
 
 - Run one instance only. The cache, the write locks and the per-user state live in the process.
-- Users who added the same spreadsheet share its cached tabs. If one of them loses access to it in Google, they can still read
-  what the cache holds until it expires.
+- Users who added the same spreadsheet share its cached tabs, but each reads the cache only while their own last read from
+  Google is within `SHEETSERVE_CACHE_TTL`. Someone who loses access in Google can keep reading cached rows for up to that long.
 - If a user revokes the app's access in their Google account, their keys return `502` until they sign in again.
 - An update or delete finds its row by key, then reads that row's key cell back just before it writes. If someone inserted or
   deleted rows by hand in between, it finds the row again, and after three tries it returns `409`. That costs one extra read

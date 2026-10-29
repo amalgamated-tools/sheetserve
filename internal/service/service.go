@@ -37,6 +37,7 @@ type Service struct {
 	settings *db.Settings
 	store    store.Store
 	cache    *Cache
+	user     int64 // whose credentials store uses, for the cache
 }
 
 type snapshot struct {
@@ -51,8 +52,8 @@ func New(settings *db.Settings, store store.Store, cacheTTL time.Duration) *Serv
 	return &Service{settings: settings, store: store, cache: NewCache(cacheTTL)}
 }
 
-// UseCache makes s read tabs through, and lock them in, c.
-func (s *Service) UseCache(c *Cache) { s.cache = c }
+// UseCache makes s read tabs through, and lock them in, c, as user.
+func (s *Service) UseCache(c *Cache, user int64) { s.cache, s.user = c, user }
 
 func (s *Service) SharesCache(other *Service) bool { return s.cache == other.cache }
 
@@ -65,9 +66,16 @@ func (s *Service) Tabs(ctx context.Context, spreadsheetID string) ([]string, err
 //
 // TODO: the cache and locks are in-process; a second replica needs Redis and a distributed lock.
 func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snapshot, error) {
-	t, err := s.read(ctx, sheet, tab, fresh)
+	t, cached, err := s.read(ctx, sheet, tab, fresh)
 	if err != nil {
 		return snapshot{}, err
+	}
+	// A date column this tab's cached values lack serials for is read now, so read the values again
+	// with it, or dates could land on rows that moved since the values were read.
+	if _, missing := s.cache.serials(t, s.dateColumns(sheet, tab, t.vals)); cached && len(missing) > 0 {
+		if t, err = s.fetch(ctx, sheet, tab, true); err != nil {
+			return snapshot{}, err
+		}
 	}
 	var snap snapshot
 	if len(t.vals) > 0 {
@@ -83,30 +91,51 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 	return snap, nil
 }
 
-// read returns the tab's values from the cache, or from Google when fresh is set or the cache has
-// none, caching what it reads unless fresh is set.
-func (s *Service) read(ctx context.Context, sheet, tab string, fresh bool) (*cachedTab, error) {
-	id := s.settings.Spreadsheets[sheet].ID
-	k := cacheKey(id, tab)
+// read returns the tab's values, and whether they came from the cache. Unless fresh is set, it
+// reads through the cache, and caches what it reads from Google.
+func (s *Service) read(ctx context.Context, sheet, tab string, fresh bool) (*cachedTab, bool, error) {
 	if !fresh {
-		if t, ok := s.cache.get(k); ok {
+		if t, ok := s.cache.get(s.user, cacheKey(s.settings.Spreadsheets[sheet].ID, tab)); ok {
 			slog.DebugContext(ctx, "cache hit", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
-				slog.Int64(otelkeys.AgeMs, time.Since(t.at).Milliseconds()))
-			return t, nil
+				slog.Int64(otelkeys.AgeMs, s.cache.now().Sub(t.at).Milliseconds()))
+			return t, true, nil
 		}
 		if s.cache.ttl > 0 {
 			slog.DebugContext(ctx, "cache miss", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab))
 		}
 	}
+	t, err := s.fetch(ctx, sheet, tab, !fresh)
+	return t, false, err
+}
+
+// fetch reads the tab's values from Google with this user's credentials, and caches them if keep.
+func (s *Service) fetch(ctx context.Context, sheet, tab string, keep bool) (*cachedTab, error) {
+	id := s.settings.Spreadsheets[sheet].ID
 	vals, err := s.store.Read(ctx, id, tab)
 	if err != nil {
 		return nil, err
 	}
-	t := &cachedTab{vals: vals, serials: map[int][]any{}, at: time.Now()}
-	if !fresh {
-		s.cache.put(k, t)
+	t := &cachedTab{vals: vals, serials: map[int][]any{}, at: s.cache.now()}
+	if keep {
+		s.cache.put(s.user, cacheKey(id, tab), t)
 	}
 	return t, nil
+}
+
+// dateColumns returns the indexes of the date and datetime columns in vals' header row, when the
+// store can read them as serial numbers.
+func (s *Service) dateColumns(sheet, tab string, vals [][]any) []int {
+	if _, ok := s.store.(store.SerialReader); !ok || len(vals) == 0 {
+		return nil
+	}
+	cols := s.columns(sheet, tab)
+	var idx []int
+	for i, h := range vals[0] {
+		if typ := cols[fmt.Sprint(h)].Type; typ == "date" || typ == "datetime" {
+			idx = append(idx, i)
+		}
+	}
+	return idx
 }
 
 // readDates replaces the cells of snap's date and datetime columns that hold dates with ISO 8601
@@ -114,20 +143,12 @@ func (s *Service) read(ctx context.Context, sheet, tab string, fresh bool) (*cac
 // locale, so those columns are read again as serial numbers, which t keeps. Text in them stays as
 // it is.
 func (s *Service) readDates(ctx context.Context, sheet, tab string, snap *snapshot, t *cachedTab) error {
+	idx := s.dateColumns(sheet, tab, t.vals)
 	sr, ok := s.store.(store.SerialReader)
-	if !ok {
+	if !ok || len(idx) == 0 {
 		return nil
 	}
 	cols := s.columns(sheet, tab)
-	var idx []int
-	for i, h := range snap.header {
-		if typ := cols[h].Type; typ == "date" || typ == "datetime" {
-			idx = append(idx, i)
-		}
-	}
-	if len(idx) == 0 {
-		return nil
-	}
 	serials, missing := s.cache.serials(t, idx)
 	if len(missing) > 0 {
 		read, err := sr.ReadSerial(ctx, s.settings.Spreadsheets[sheet].ID, tab, missing)
