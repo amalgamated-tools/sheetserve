@@ -24,6 +24,12 @@ type Store interface {
 	Tabs(ctx context.Context, spreadsheetID string) ([]string, error)
 }
 
+// SerialReader reads chosen columns of a tab with dates and times as serial numbers, one slice per
+// column from row 1. A Store that can't doesn't implement it, and its dates read as they show.
+type SerialReader interface {
+	ReadSerial(ctx context.Context, spreadsheetID, tab string, cols []int) ([][]any, error)
+}
+
 // Tab is a tab for a new spreadsheet, with the header row it starts with.
 type Tab struct {
 	Name    string
@@ -63,22 +69,72 @@ func (g *googleStore) Read(ctx context.Context, id, tab string) (_ [][]any, err 
 	return resp.Values, nil
 }
 
-// Writes use RAW input so client data is never parsed as a formula.
+// ReadSerial reads columns cols of a tab with dates and times as serial numbers, which don't
+// depend on the spreadsheet's locale. It returns one slice per column, from row 1.
+func (g *googleStore) ReadSerial(ctx context.Context, id, tab string, cols []int) (_ [][]any, err error) {
+	defer logCall(ctx, "read_serial", id, tab, time.Now(), &err)
+	var ranges []string
+	for _, c := range cols {
+		ranges = append(ranges, quoteTab(tab)+"!"+colName(c)+":"+colName(c))
+	}
+	resp, err := g.svc.Spreadsheets.Values.BatchGet(id).Ranges(ranges...).MajorDimension("COLUMNS").
+		ValueRenderOption("UNFORMATTED_VALUE").DateTimeRenderOption("SERIAL_NUMBER").Context(ctx).Do()
+	if err != nil {
+		return nil, err
+	}
+	out := make([][]any, len(cols))
+	for i, vr := range resp.ValueRanges {
+		if i < len(out) && len(vr.Values) > 0 {
+			out[i] = vr.Values[0]
+		}
+	}
+	return out, nil
+}
+
+// Writes use USER_ENTERED input, so a Date becomes a date cell, but every string goes in with a
+// leading apostrophe, which keeps it text: client data is never parsed as a formula, number or date.
+
+// Date is a cell value to write as a date, or as a date and time in UTC when WithTime is set.
+type Date struct {
+	time.Time
+	WithTime bool
+}
+
+// userEntered returns v as it is sent to Sheets.
+func userEntered(v any) any {
+	switch v := v.(type) {
+	case string:
+		if v == "" {
+			return v // empties the cell
+		}
+		return "'" + v
+	case Date:
+		if v.WithTime {
+			return v.UTC().Format(time.DateTime)
+		}
+		return v.Format(time.DateOnly)
+	}
+	return v
+}
 
 func (g *googleStore) Append(ctx context.Context, id, tab string, row []any) (err error) {
 	defer logCall(ctx, "append", id, tab, time.Now(), &err)
-	_, err = g.svc.Spreadsheets.Values.Append(id, quoteTab(tab)+"!A1", &sheets.ValueRange{Values: [][]any{row}}).
-		ValueInputOption("RAW").InsertDataOption("INSERT_ROWS").Context(ctx).Do()
+	vals := make([]any, len(row))
+	for i, v := range row {
+		vals[i] = userEntered(v)
+	}
+	_, err = g.svc.Spreadsheets.Values.Append(id, quoteTab(tab)+"!A1", &sheets.ValueRange{Values: [][]any{vals}}).
+		ValueInputOption("USER_ENTERED").InsertDataOption("INSERT_ROWS").Context(ctx).Do()
 	return err
 }
 
 func (g *googleStore) SetCells(ctx context.Context, id, tab string, row int, cells map[int]any) (err error) {
 	defer logCall(ctx, "set_cells", id, tab, time.Now(), &err)
-	req := &sheets.BatchUpdateValuesRequest{ValueInputOption: "RAW"}
+	req := &sheets.BatchUpdateValuesRequest{ValueInputOption: "USER_ENTERED"}
 	for col, v := range cells {
 		req.Data = append(req.Data, &sheets.ValueRange{
 			Range:  quoteTab(tab) + "!" + colName(col) + strconv.Itoa(row),
-			Values: [][]any{{v}},
+			Values: [][]any{{userEntered(v)}},
 		})
 	}
 	_, err = g.svc.Spreadsheets.Values.BatchUpdate(id, req).Context(ctx).Do()
