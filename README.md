@@ -86,18 +86,13 @@ pick another column, such as `email` or `sku`, on the Columns page.
 - A key value that more than one row holds returns `409`, so the server never guesses which row you meant.
 - A tab whose header has no key column can only be listed. Its other routes return `403`.
 
-To start from nothing, create a blank spreadsheet in the dashboard instead. List one tab per line with its columns:
-
-```text
-Orders: item, qty, price
-Customers: name, email
-```
-
+To start from nothing, create a blank spreadsheet in the dashboard instead. List its tabs like tables:
+each column with a type and whether it's required, and the key column that finds a row.
 The server creates the spreadsheet in your Drive with your Google account, writes and freezes each header row,
-and puts an `id` column first unless you list one. To use another key column, mark it with `*`, as in `Products: *sku, name, price`.
-That tab gets no `id` column, and its key column is set already. `drive.file` covers files the app creates, so you don't need to pick it.
+and saves the column types. A tab with no key column gets an `id` column first, unless you list one.
+`drive.file` covers files the app creates, so you don't need to pick it.
 
-![The Create a spreadsheet form, with three tabs and their columns](docs/images/create-spreadsheet.jpg)
+![The Create a spreadsheet form: a Products tab keyed by sku and an Orders tab that gets an id column, each with typed columns](docs/images/create-spreadsheet.jpg)
 
 A key acts through the Google account of the user who made it.
 

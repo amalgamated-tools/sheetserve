@@ -182,40 +182,78 @@ func leadingZero(s string) bool {
 	return len(s) > 1 && s[0] == '0' && s[1] != '.'
 }
 
+// tabForm is one tab as the columns page or the new spreadsheet page posts it.
+type tabForm struct {
+	Name    string
+	Key     string // the key column; "" for none, which on the new spreadsheet page means an id column
+	Columns []columnForm
+}
+
+type columnForm struct {
+	Name, Type       string
+	Required, Hidden bool
+}
+
+// parseTabs reads the tabs a form lists. Inputs are numbered, since tab and column names can hold
+// any character: t<i> is the i-th tab's name and t<i>key its key column; t<i>c<j> is the name of
+// its j-th column, and t<i>c<j>type, ...required and ...hidden the rest of it. Names are trimmed,
+// and a column without one is skipped, as a blank row on the new spreadsheet page is.
+func parseTabs(form url.Values) []tabForm {
+	var tabs []tabForm
+	for i := 0; ; i++ {
+		ti := "t" + strconv.Itoa(i)
+		if _, ok := form[ti]; !ok {
+			return tabs
+		}
+		t := tabForm{Name: strings.TrimSpace(form.Get(ti)), Key: strings.TrimSpace(form.Get(ti + "key"))}
+		for j := 0; ; j++ {
+			cj := ti + "c" + strconv.Itoa(j)
+			if _, ok := form[cj]; !ok {
+				break
+			}
+			if name := strings.TrimSpace(form.Get(cj)); name != "" {
+				t.Columns = append(t.Columns, columnForm{Name: name, Type: form.Get(cj + "type"),
+					Required: form.Get(cj+"required") != "", Hidden: form.Get(cj+"hidden") != ""})
+			}
+		}
+		tabs = append(tabs, t)
+	}
+}
+
+// rule returns the tab's key column, hidden columns and column types, or why they don't fit together.
+func (t tabForm) rule() (db.TabRule, error) {
+	rule := db.TabRule{Key: t.Key, Columns: map[string]db.Column{}}
+	for _, c := range t.Columns {
+		if _, dup := rule.Columns[c.Name]; dup {
+			return rule, fmt.Errorf("%s: column %q is listed twice", t.Name, c.Name)
+		}
+		rule.Columns[c.Name] = db.Column{Type: c.Type, Required: c.Required}
+		if c.Hidden {
+			rule.Hidden = append(rule.Hidden, c.Name)
+		}
+	}
+	if _, ok := rule.Columns[t.Key]; t.Key != "" && !ok {
+		return rule, fmt.Errorf("%s: the key column %q is not one of its columns", t.Name, t.Key)
+	}
+	if slices.Contains(rule.Hidden, t.Key) {
+		return rule, fmt.Errorf("%s: the key column %s can't be hidden", t.Name, t.Key)
+	}
+	return rule, nil
+}
+
 // saveColumns saves the columns page's form: for each tab, its key column, hidden columns and
-// each column's type and whether it's required. Inputs are numbered, t<i>... for the i-th tab
-// and t<i>c<j>... for its j-th column, since tab and column names can hold any character.
+// each column's type and whether it's required.
 func (d *Dashboard) saveColumns(w http.ResponseWriter, r *http.Request, u user) {
 	sheet := r.FormValue("sheet")
 	fail := func(msg string) { d.renderColumns(w, r, u, sheet, msg, http.StatusBadRequest) }
 	tabs := map[string]db.TabRule{}
-	for i := 0; ; i++ {
-		ti := "t" + strconv.Itoa(i)
-		tab, ok := r.PostForm[ti]
-		if !ok {
-			break
-		}
-		rule := db.TabRule{Key: r.FormValue(ti + "key"), Columns: map[string]db.Column{}}
-		for j := 0; ; j++ {
-			cj := ti + "c" + strconv.Itoa(j)
-			name := r.FormValue(cj)
-			if name == "" {
-				break
-			}
-			rule.Columns[name] = db.Column{Type: r.FormValue(cj + "type"), Required: r.FormValue(cj+"required") != ""}
-			if r.FormValue(cj+"hidden") != "" {
-				rule.Hidden = append(rule.Hidden, name)
-			}
-		}
-		if _, ok := rule.Columns[rule.Key]; rule.Key != "" && !ok {
-			fail(fmt.Sprintf("%s: the key column %q is not one of its columns", tab[0], rule.Key))
+	for _, t := range parseTabs(r.PostForm) {
+		rule, err := t.rule()
+		if err != nil {
+			fail(err.Error())
 			return
 		}
-		if slices.Contains(rule.Hidden, rule.Key) {
-			fail(fmt.Sprintf("%s: the key column %s can't be hidden", tab[0], rule.Key))
-			return
-		}
-		tabs[tab[0]] = rule
+		tabs[t.Name] = rule
 	}
 	err := d.DB.SaveColumns(r.Context(), u.id, sheet, tabs)
 	if err != nil {

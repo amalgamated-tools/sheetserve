@@ -87,7 +87,8 @@ func TestDashboardChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []Spreadsheet{
-		{Name: "shop", GoogleID: "SS", Title: "Shop", Tabs: []string{"Orders", "Items"}},
+		{Name: "shop", GoogleID: "SS", Title: "Shop", Tabs: []string{"Orders", "Items"},
+			Rules: map[string]TabRule{"Items": {Key: "sku", Columns: map[string]Column{"sku": {Type: "string"}, "qty": {Type: "integer", Required: true}}}}},
 		{Name: "crm", GoogleID: "CC", Title: "CRM", Tabs: []string{"People"}},
 	} {
 		if err := db.AddSpreadsheet(ctx, id, s); err != nil {
@@ -126,8 +127,11 @@ func TestDashboardChanges(t *testing.T) {
 		rule.KeyColumn() != "sku" || !maps.Equal(rule.Columns, cols) || len(cfg.Keys) != 0 {
 		t.Errorf("config: %+v %+v", rule, cfg.Keys)
 	}
-	if rule := cfg.Spreadsheets["shop"].Tabs["Items"]; rule.Columns != nil {
-		t.Errorf("untyped tab has columns: %+v", rule.Columns)
+	if rule := cfg.Spreadsheets["shop"].Tabs["Items"]; rule.KeyColumn() != "sku" || rule.Columns["qty"] != (Column{Type: "integer", Required: true}) {
+		t.Errorf("Items as added: %+v", rule)
+	}
+	if rule := cfg.Spreadsheets["crm"].Tabs["People"]; rule.Columns != nil || rule.KeyColumn() != "id" {
+		t.Errorf("untyped tab: %+v", rule)
 	}
 	if exists, err := db.SpreadsheetExists(ctx, id, "crm"); err != nil || !exists {
 		t.Errorf("crm exists: %v %v", exists, err)

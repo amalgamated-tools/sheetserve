@@ -81,7 +81,10 @@ type userView struct {
 	You   bool
 }
 
-type newSheetForm struct{ Name, Title, Schema string }
+type newSheetForm struct {
+	Name, Title string
+	Tabs        []tabForm
+}
 
 // Dashboard serves the pages where signed-in users manage their spreadsheets, tabs and keys.
 type Dashboard struct {
@@ -215,6 +218,9 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, v vie
 	switch v.path {
 	case newSheetPage:
 		s.Title = "New spreadsheet"
+		if len(v.newSheet.Tabs) == 0 {
+			v.newSheet.Tabs = []tabForm{{Columns: []columnForm{{Type: "string"}}}}
+		}
 		page = newSheetView(s, v.newSheet)
 	case keysPage:
 		s.Title, s.Section = "API keys", keysPage

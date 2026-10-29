@@ -120,23 +120,78 @@ templ nameField(value string) {
 }
 
 templ newSheetView(s shell, form newSheetForm) {
-	@layout(s) {
+	@layout(s, "/static/new-sheet.js") {
 		<div class="page-head">
 			<a class="back" href="/sheets">← Spreadsheets</a>
 			<h1>Create a spreadsheet</h1>
-			<p>sheetserve creates a blank spreadsheet in your Google Drive, writes each tab's header row, and adds it here.</p>
+			<p>sheetserve creates a blank spreadsheet in your Google Drive, writes each tab's header row, and adds it here with its column types.</p>
 		</div>
-		<section class="card">
-			<form method="post" action="/app/sheets/new">
+		<form id="new-sheet" method="post" action="/app/sheets/new">
+			<section class="card">
 				<label class="field"><span>Title in Drive</span><input name="title" value={ form.Title } placeholder="Same as the name"/></label>
 				@nameField(form.Name)
-				<label class="field">
-					<span>Tabs and columns</span>
-					<textarea name="schema" rows="6" required placeholder="Orders: item, qty, price&#10;Customers: name, email">{ form.Schema }</textarea>
-					<span class="hint">One tab per line, as <code>Tab: column, column</code>. Mark a key column with <code>*</code>, as in <code>Products: *sku, name</code>. A tab without one gets an <code>id</code> column first unless you list one.</span>
-				</label>
-				<div class="actions"><button class="primary">Create spreadsheet</button> <a class="button" href="/sheets">Cancel</a></div>
-			</form>
-		</section>
+			</section>
+			<h2>Tabs</h2>
+			<p class="hint">Each tab is like a table: list its columns, their types, and the key column that finds a row. With no key column, sheetserve adds an <code>id</code> column first and fills it in on each create.</p>
+			<div id="tabs">
+				for i, t := range form.Tabs {
+					@newTabCard(fmt.Sprintf("t%d", i), t)
+				}
+			</div>
+			<div class="actions"><button type="button" id="add-tab">+ Add tab</button></div>
+			// The script copies these for new tabs and columns, then numbers their inputs.
+			<template id="tab-template">
+				@newTabCard("tnew", tabForm{Columns: []columnForm{{Type: "string"}}})
+			</template>
+			<template id="column-template">
+				@newColumnRow("tnew", "tnewcnew", "", columnForm{Type: "string"})
+			</template>
+			<div class="actions"><button class="primary">Create spreadsheet</button> <a class="button" href="/sheets">Cancel</a></div>
+		</form>
 	}
+}
+
+// newTabCard is one tab on the new spreadsheet page. Its inputs are named from ti; see parseTabs.
+templ newTabCard(ti string, t tabForm) {
+	<section class="card tab-card">
+		<div class="card-head">
+			<label class="tab-name"><span>Tab</span> <input data-f="tab" name={ ti } value={ t.Name } placeholder="Orders" aria-label="Tab name"/></label>
+			<button type="button" class="danger small" data-remove-tab>Remove tab</button>
+		</div>
+		<div class="table-wrap">
+			<table class="columns builder">
+				<thead><tr><th>Column</th><th>Type</th><th>Required</th><th>Key</th><th></th></tr></thead>
+				<tbody>
+					for j, c := range t.Columns {
+						@newColumnRow(ti, fmt.Sprintf("%sc%d", ti, j), t.Key, c)
+					}
+					if len(t.Columns) == 0 {
+						@newColumnRow(ti, ti+"c0", t.Key, columnForm{Type: "string"})
+					}
+				</tbody>
+				<tfoot>
+					<tr>
+						<td colspan="3"><button type="button" class="small" data-add-column>+ Add column</button></td>
+						<td colspan="2"><label><input type="radio" data-f="key" name={ ti + "key" } value="" checked?={ t.Key == "" }/> Add <code>id</code></label></td>
+					</tr>
+				</tfoot>
+			</table>
+		</div>
+	</section>
+}
+
+templ newColumnRow(ti, cj, key string, c columnForm) {
+	<tr>
+		<td><input data-f="col" name={ cj } value={ c.Name } placeholder="item" aria-label="Column name"/></td>
+		<td>
+			<select data-f="type" name={ cj + "type" } aria-label="Column type">
+				for _, o := range columnTypeOptions {
+					<option value={ o.Type } selected?={ c.Type == o.Type }>{ o.Label }</option>
+				}
+			</select>
+		</td>
+		<td><input type="checkbox" data-f="required" name={ cj + "required" } value="1" checked?={ c.Required } aria-label="Required"/></td>
+		<td><input type="radio" data-f="key" name={ ti + "key" } value={ c.Name } checked?={ c.Name != "" && c.Name == key } aria-label="Key column"/></td>
+		<td class="right"><button type="button" class="small" data-remove-column aria-label="Remove column">×</button></td>
+	</tr>
 }
