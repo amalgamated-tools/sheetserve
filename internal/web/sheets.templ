@@ -71,10 +71,19 @@ templ tabRow(sheet, f string, t tabView) {
 	<tr>
 		<td><strong>{ t.Name }</strong></td>
 		<td>
-			<div class="chips">
-				for _, op := range db.AllOps {
-					<label class="chip"><input type="checkbox" form={ f } name="ops" value={ op } checked?={ slices.Contains(t.Ops, op) }/> { op }</label>
-				}
+			<div class="ops">
+				// The menu has no name, so it is never posted; sheets.js has it set the checkboxes.
+				<select class="ops-preset" data-form={ f } aria-label={ "Ops preset for " + t.Name }>
+					for _, p := range opsPresets {
+						<option value={ p.Ops } selected?={ presetValue(t.Ops) == p.Ops }>{ p.Label }</option>
+					}
+					<option value="custom" disabled selected?={ presetValue(t.Ops) == "custom" }>Custom</option>
+				</select>
+				<div class="chips">
+					for _, op := range db.AllOps {
+						<label class="chip"><input type="checkbox" form={ f } name="ops" value={ op } checked?={ slices.Contains(t.Ops, op) }/> { op }</label>
+					}
+				</div>
 			</div>
 		</td>
 		<td><input form={ f } name="hidden" value={ t.Hidden } placeholder="cost, notes" aria-label={ "Hidden columns for " + t.Name }/></td>

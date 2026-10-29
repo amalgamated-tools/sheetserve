@@ -585,3 +585,45 @@ func TestAuditLog(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetValue(t *testing.T) {
+	for ops, want := range map[string]string{
+		"":                          "",
+		"read":                      "read",
+		"update,read,create":        "read,create,update",
+		"delete,update,create,read": "read,create,update,delete",
+		"read,delete":               "custom",
+		"create":                    "custom",
+	} {
+		var in []string
+		if ops != "" {
+			in = strings.Split(ops, ",")
+		}
+		if got := presetValue(in); got != want {
+			t.Errorf("presetValue(%q) = %q, want %q", ops, got, want)
+		}
+	}
+}
+
+// Each tab row's preset menu opens on the preset its saved ops match, or on Custom.
+func TestOpsPresetMenu(t *testing.T) {
+	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{}})
+	alice := signInAs(t, dash, srv, "alice")
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item\nNotes: text\nPeople: name"}}); s != 303 {
+		t.Fatalf("create sheet: %d %s", s, body)
+	}
+	for tab, ops := range map[string][]string{"Orders": db.AllOps, "Notes": {"read", "delete"}} {
+		if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {tab}, "ops": ops}); s != 303 {
+			t.Fatalf("save %s: %d %s", tab, s, body)
+		}
+	}
+	_, body := get(t, alice, srv.URL+"/sheets", "")
+	selected := regexp.MustCompile(`aria-label="Ops preset for (\w+)">.*?<option value="([^"]*)"[^>]* selected>`)
+	got := map[string]string{}
+	for _, m := range selected.FindAllStringSubmatch(body, -1) {
+		got[m[1]] = m[2]
+	}
+	if want := map[string]string{"Orders": "read,create,update,delete", "Notes": "custom", "People": ""}; !maps.Equal(got, want) {
+		t.Errorf("selected presets: %v, want %v", got, want)
+	}
+}

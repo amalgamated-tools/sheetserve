@@ -175,6 +175,32 @@ func parseSchema(s string) (tabs []store.Tab, keys map[string]string, err error)
 	return tabs, keys, nil
 }
 
+// opsPreset is a named set of ops that a tab row's menu turns on at once. Ops lists them in
+// db.AllOps order, joined by commas.
+type opsPreset struct{ Label, Ops string }
+
+var opsPresets = []opsPreset{
+	{"None", ""},
+	{"Read only", "read"},
+	{"Read and write", "read,create,update"},
+	{"All", strings.Join(db.AllOps, ",")},
+}
+
+// presetValue returns the menu value that matches ops, or "custom" when no preset does.
+func presetValue(ops []string) string {
+	var in []string
+	for _, op := range db.AllOps {
+		if slices.Contains(ops, op) {
+			in = append(in, op)
+		}
+	}
+	v := strings.Join(in, ",")
+	if slices.ContainsFunc(opsPresets, func(p opsPreset) bool { return p.Ops == v }) {
+		return v
+	}
+	return "custom"
+}
+
 func (d *Dashboard) deleteSheet(w http.ResponseWriter, r *http.Request, u user) {
 	name := r.FormValue("name")
 	err := d.DB.DeleteSpreadsheet(r.Context(), u.id, name)
