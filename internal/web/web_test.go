@@ -354,41 +354,54 @@ func TestCreateSheet(t *testing.T) {
 	dash, srv := newTestDashboard(t, fs)
 	alice := signInAs(t, dash, srv, "alice")
 
-	form := url.Values{"name": {"shop"}, "schema": {"Orders: item, qty\n\nNotes\nProducts: *sku, name"}}
+	if s, body := get(t, alice, srv.URL+"/sheets/new", ""); s != 200 || !strings.Contains(body, `<input data-f="tab" name="t0" value=""`) ||
+		!strings.Contains(body, `<template id="tab-template">`) || !strings.Contains(body, `src="/static/new-sheet.js"`) {
+		t.Errorf("new sheet page: %d %s", s, body)
+	}
+	// Orders has no key column, so it gets an id. Notes is a blank card, skipped.
+	form := url.Values{"name": {"shop"},
+		"t0": {"Orders"}, "t0key": {""}, "t0c0": {"item"}, "t0c0type": {"string"}, "t0c0required": {"1"},
+		"t0c1": {" "}, "t0c2": {"qty"}, "t0c2type": {"integer"},
+		"t1": {""}, "t1c0": {""},
+		"t2": {"Products"}, "t2key": {"sku"}, "t2c0": {"sku"}, "t2c0type": {"string"}, "t2c1": {"name"}, "t2c1type": {""},
+	}
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 303 {
 		t.Fatalf("create sheet: %d %s", s, body)
 	}
 	if got := fs.tabs["new-shop/Orders"]; len(got) == 0 || !slices.Equal(got[0], []any{"id", "item", "qty"}) {
 		t.Errorf("Orders header: %v", got)
 	}
-	if got := fs.tabs["new-shop/Notes"]; len(got) == 0 || !slices.Equal(got[0], []any{"id"}) {
-		t.Errorf("Notes header: %v", got)
-	}
-	// A tab with a * key gets no id column, and its key column is set already.
 	if got := fs.tabs["new-shop/Products"]; len(got) == 0 || !slices.Equal(got[0], []any{"sku", "name"}) {
 		t.Errorf("Products header: %v", got)
 	}
-	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, `key <code>sku</code>`) {
-		t.Errorf("Products key column not shown as sku: %s", body)
+	if _, ok := fs.tabs["new-shop/"]; ok || len(fs.tabs) != 2 {
+		t.Errorf("tabs created: %v", slices.Sorted(maps.Keys(fs.tabs)))
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "key <code>id</code> · 3 typed") || !strings.Contains(body, "key <code>sku</code> · 1 typed") {
+		t.Errorf("tab summaries: %s", body)
 	}
 	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}); s != 303 {
 		t.Fatalf("save tab: %d %s", s, body)
 	}
 	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}})
 	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
-	req := newRequest(t, "POST", srv.URL+"/v1/shop/Orders", strings.NewReader(`{"item":"mug","qty":2}`))
-	req.Header.Set("Authorization", "Bearer "+key)
-	if s, body := send(t, browser(t), req); s != 201 {
-		t.Errorf("create row: %d %s", s, body)
+	for row, want := range map[string]int{`{"item":"mug","qty":2}`: 201, `{"item":"mug","qty":"2"}`: 400, `{"qty":2}`: 400} {
+		req := newRequest(t, "POST", srv.URL+"/v1/shop/Orders", strings.NewReader(row))
+		req.Header.Set("Authorization", "Bearer "+key)
+		if s, body := send(t, browser(t), req); s != want {
+			t.Errorf("create row %s: %d %s, want %d", row, s, body, want)
+		}
 	}
 
 	if s, body := post(t, alice, srv.URL+"/app/sheets/new", form); s != 400 || !strings.Contains(body, "already in use") || fs.created != 1 {
 		t.Errorf("taken name: %d, %d creates: %s", s, fs.created, body)
 	}
-	bad := url.Values{"name": {"other"}, "schema": {"Orders: a, a"}}
-	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) || !strings.Contains(body, ">Orders: a, a</textarea>") ||
-		!strings.Contains(body, "<title>New spreadsheet · sheetserve</title>") {
-		t.Errorf("bad schema: %d %s", s, body)
+	// A failed create shows the form again as it was sent.
+	bad := url.Values{"name": {"other"}, "title": {"Other"}, "t0": {"Orders"}, "t0c0": {"a"}, "t0c0type": {"date"}, "t0c1": {"a"}}
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", bad); s != 400 || !strings.Contains(body, `column &#34;a&#34; is listed twice`) ||
+		!strings.Contains(body, `name="t0" value="Orders"`) || !strings.Contains(body, `name="t0c0" value="a"`) ||
+		!strings.Contains(body, `<option value="date" selected>`) || !strings.Contains(body, `name="title" value="Other"`) {
+		t.Errorf("bad tabs: %d %s", s, body)
 	}
 }
 
@@ -396,36 +409,45 @@ func TestCreateSheet(t *testing.T) {
 func TestCreateSheetUnsupported(t *testing.T) {
 	dash, srv := newTestDashboard(t, failingStore{errors.New("unused")})
 	alice := signInAs(t, dash, srv, "alice")
-	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}); s != 502 || !strings.Contains(body, "could not create") {
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "t0": {"Orders"}, "t0c0": {"item"}}); s != 502 || !strings.Contains(body, "could not create") {
 		t.Errorf("create sheet: %d %s", s, body)
 	}
 }
 
-func TestParseSchema(t *testing.T) {
-	tabs, keys, err := parseSchema(" Orders : item,  qty ,\r\nPeople: id, name\nProducts: name, * sku\n\n")
+func TestNewTabs(t *testing.T) {
+	tabs, rules, err := newTabs([]tabForm{
+		{Name: "Orders", Columns: []columnForm{{Name: "item", Type: "string"}}},
+		{Name: "People", Columns: []columnForm{{Name: "name"}, {Name: "id", Type: "integer"}}},
+		{Name: "Products", Key: "sku", Columns: []columnForm{{Name: "name"}, {Name: "sku", Type: "string"}}},
+		{},
+	})
 	want := []store.Tab{
-		{Name: "Orders", Columns: []string{"id", "item", "qty"}},
-		{Name: "People", Columns: []string{"id", "name"}},
+		{Name: "Orders", Columns: []string{"id", "item"}},
+		{Name: "People", Columns: []string{"name", "id"}}, // it lists its own id
 		{Name: "Products", Columns: []string{"name", "sku"}},
 	}
 	if err != nil || !slices.EqualFunc(tabs, want, func(a, b store.Tab) bool { return a.Name == b.Name && slices.Equal(a.Columns, b.Columns) }) {
-		t.Errorf("parseSchema: %v, %v", tabs, err)
+		t.Errorf("newTabs: %v, %v", tabs, err)
 	}
-	if !maps.Equal(keys, map[string]string{"Products": "sku"}) {
-		t.Errorf("parseSchema keys: %v", keys)
+	if r := rules["Orders"]; r.KeyColumn() != "id" || r.Columns["id"].Type != "string" || r.Columns["item"].Type != "string" {
+		t.Errorf("Orders rule: %+v", r)
 	}
-	for in, msg := range map[string]string{
-		"":                     "at least one tab",
-		": item":               "tab name missing",
-		"a/b: item":            "must not contain /",
-		"Orders\norders: item": "listed twice",
-		"Orders: qty, qty":     "listed twice",
-		"Orders: *sku, sku":    "listed twice",
-		"Orders: *a, *b":       "only one column",
-		"Orders: item, *":      "needs a column name",
+	if r := rules["People"]; r.Columns["id"].Type != "integer" {
+		t.Errorf("People rule: %+v", r)
+	}
+	if r := rules["Products"]; r.KeyColumn() != "sku" {
+		t.Errorf("Products rule: %+v", r)
+	}
+	for msg, forms := range map[string][]tabForm{
+		"at least one tab":         nil,
+		"give each tab a name":     {{Columns: []columnForm{{Name: "item"}}}},
+		"must not contain /":       {{Name: "a/b"}},
+		"is listed twice":          {{Name: "Orders"}, {Name: "orders"}},
+		"column \"qty\" is listed": {{Name: "Orders", Columns: []columnForm{{Name: "qty"}, {Name: "qty"}}}},
+		"not one of its columns":   {{Name: "Orders", Key: "sku", Columns: []columnForm{{Name: "item"}}}},
 	} {
-		if _, _, err := parseSchema(in); err == nil || !strings.Contains(err.Error(), msg) {
-			t.Errorf("parseSchema(%q): %v, want %q", in, err, msg)
+		if _, _, err := newTabs(forms); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("newTabs(%v): %v, want %q", forms, err, msg)
 		}
 	}
 }
@@ -650,7 +672,7 @@ func TestAuditLog(t *testing.T) {
 		path string
 		form url.Values
 	}{
-		{"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item"}}},
+		{"/app/sheets/new", url.Values{"name": {"shop"}, "t0": {"Orders"}, "t0c0": {"item"}}},
 		{"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}},
 		{"/app/sheets/columns", url.Values{"sheet": {"shop"}, "t0": {"Orders"}, "t0key": {"id"},
 			"t0c0": {"id"}, "t0c0type": {"string"}, "t0c1": {"item"}, "t0c1type": {"string"}, "t0c1required": {"1"}, "t0c1hidden": {"1"}}},
@@ -715,7 +737,7 @@ func TestPresetValue(t *testing.T) {
 func TestOpsPresetMenu(t *testing.T) {
 	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{}})
 	alice := signInAs(t, dash, srv, "alice")
-	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "schema": {"Orders: item\nNotes: text\nPeople: name"}}); s != 303 {
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "t0": {"Orders"}, "t0c0": {"item"}, "t1": {"Notes"}, "t1c0": {"text"}, "t2": {"People"}, "t2c0": {"name"}}); s != 303 {
 		t.Fatalf("create sheet: %d %s", s, body)
 	}
 	for tab, ops := range map[string][]string{"Orders": db.AllOps, "Notes": {"read", "delete"}} {

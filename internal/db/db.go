@@ -221,7 +221,7 @@ type Spreadsheet struct {
 	Name, Title string
 	GoogleID    string
 	Tabs        []string
-	Keys        map[string]string // key column by tab; a tab not listed uses "id"
+	Rules       map[string]TabRule // key column and column types by tab; a tab not listed uses "id" and is untyped
 }
 
 // UserSettings reads userID's spreadsheets and keys into validated Settings.
@@ -275,7 +275,8 @@ func (d *DB) SpreadsheetExists(ctx context.Context, userID int64, name string) (
 	return taken, err
 }
 
-// AddSpreadsheet records s and its tabs. Every tab starts off; the user enables ops per tab.
+// AddSpreadsheet records s and its tabs, with their key columns and column types from s.Rules.
+// Every tab starts off; the user enables ops per tab.
 func (d *DB) AddSpreadsheet(ctx context.Context, userID int64, s Spreadsheet) error {
 	return d.update(ctx, userID, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO spreadsheets (user_id, name, google_id, title) VALUES (?, ?, ?, ?)`,
@@ -283,8 +284,12 @@ func (d *DB) AddSpreadsheet(ctx context.Context, userID int64, s Spreadsheet) er
 			return err
 		}
 		for _, tab := range s.Tabs {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO tabs (user_id, sheet, tab, ops, hidden, key_column) VALUES (?, ?, ?, '[]', '[]', ?)`,
-				userID, s.Name, tab, cmp.Or(s.Keys[tab], "id")); err != nil {
+			rule := s.Rules[tab]
+			if _, err := tx.ExecContext(ctx, `INSERT INTO tabs (user_id, sheet, tab, ops, hidden, key_column) VALUES (?, ?, ?, '[]', ?, ?)`,
+				userID, s.Name, tab, jsonList(rule.Hidden), rule.KeyColumn()); err != nil {
+				return err
+			}
+			if err := insertColumns(ctx, tx, userID, s.Name, tab, rule.Columns); err != nil {
 				return err
 			}
 		}
@@ -323,18 +328,27 @@ func (d *DB) SaveColumns(ctx context.Context, userID int64, sheet string, tabs m
 			if _, err := tx.ExecContext(ctx, `DELETE FROM columns WHERE user_id = ? AND sheet = ? AND tab = ?`, userID, sheet, tab); err != nil {
 				return err
 			}
-			for name, c := range rule.Columns {
-				if _, err := tx.ExecContext(ctx, `INSERT INTO columns (user_id, sheet, tab, name, type, required) VALUES (?, ?, ?, ?, ?, ?)`,
-					userID, sheet, tab, name, c.Type, c.Required); err != nil {
-					if strings.Contains(err.Error(), "CHECK constraint failed") {
-						return ValidationError(fmt.Sprintf("column %q: unknown type %q", name, c.Type))
-					}
-					return err
-				}
+			if err := insertColumns(ctx, tx, userID, sheet, tab, rule.Columns); err != nil {
+				return err
 			}
 		}
 		return nil
 	})
+}
+
+// insertColumns records the types of a tab's columns.
+func insertColumns(ctx context.Context, tx *sql.Tx, userID int64, sheet, tab string, cols map[string]Column) error {
+	for _, name := range slices.Sorted(maps.Keys(cols)) {
+		c := cols[name]
+		if _, err := tx.ExecContext(ctx, `INSERT INTO columns (user_id, sheet, tab, name, type, required) VALUES (?, ?, ?, ?, ?, ?)`,
+			userID, sheet, tab, name, c.Type, c.Required); err != nil {
+			if strings.Contains(err.Error(), "CHECK constraint failed") {
+				return ValidationError(fmt.Sprintf("column %q: unknown type %q", name, c.Type))
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // mustAffect returns err, or a ValidationError saying msg when the statement changed no rows.

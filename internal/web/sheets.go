@@ -70,10 +70,15 @@ func (d *Dashboard) saveSheet(w http.ResponseWriter, r *http.Request, u user, ac
 	d.change(w, r, u, to, err)
 }
 
-// createSheet makes a blank spreadsheet in the user's Drive from a schema, then adds it like a
-// picked one. drive.file covers files the app creates, so the user needn't pick it.
+// createSheet makes a blank spreadsheet in the user's Drive from the tabs and columns on the new
+// spreadsheet page, then adds it like a picked one, with its key columns and column types saved.
+// drive.file covers files the app creates, so the user needn't pick it.
 func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) {
-	form := newSheetForm{Name: r.FormValue("name"), Title: strings.TrimSpace(r.FormValue("title")), Schema: r.FormValue("schema")}
+	if err := r.ParseForm(); err != nil {
+		d.render(w, r, u, view{path: newSheetPage, err: "could not read the form"}, http.StatusBadRequest)
+		return
+	}
+	form := newSheetForm{Name: r.PostForm.Get("name"), Title: strings.TrimSpace(r.PostForm.Get("title")), Tabs: parseTabs(r.PostForm)}
 	fail := func(status int, msg string) {
 		d.render(w, r, u, view{path: newSheetPage, err: msg, newSheet: form}, status)
 	}
@@ -81,7 +86,7 @@ func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) 
 		fail(http.StatusBadRequest, "name must be letters, digits, - or _")
 		return
 	}
-	tabs, keys, err := parseSchema(form.Schema)
+	tabs, rules, err := newTabs(form.Tabs)
 	if err != nil {
 		fail(http.StatusBadRequest, err.Error())
 		return
@@ -107,8 +112,44 @@ func (d *Dashboard) createSheet(w http.ResponseWriter, r *http.Request, u user) 
 	for i, t := range tabs {
 		names[i] = t.Name
 	}
-	d.saveSheet(w, r, u, "sheet.create", db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Keys: keys},
+	d.saveSheet(w, r, u, "sheet.create", db.Spreadsheet{Name: form.Name, Title: title, GoogleID: gid, Tabs: names, Rules: rules},
 		sheetsPage+"#sheet-"+form.Name)
+}
+
+// newTabs turns the tabs on the new spreadsheet page into the header rows to write and the rules
+// to save, by tab name. A tab without a key column gets an id column first unless it lists one,
+// since the API finds its rows by id. A tab with no name and no columns is a blank card, skipped.
+func newTabs(forms []tabForm) ([]store.Tab, map[string]db.TabRule, error) {
+	var tabs []store.Tab
+	rules := map[string]db.TabRule{}
+	for _, f := range forms {
+		switch {
+		case f.Name == "" && len(f.Columns) == 0:
+			continue
+		case f.Name == "":
+			return nil, nil, errors.New("give each tab a name")
+		case strings.Contains(f.Name, "/"):
+			return nil, nil, fmt.Errorf("tab %q: name must not contain /", f.Name)
+		case slices.ContainsFunc(tabs, func(t store.Tab) bool { return strings.EqualFold(t.Name, f.Name) }):
+			return nil, nil, fmt.Errorf("tab %q is listed twice", f.Name)
+		}
+		if f.Key == "" && !slices.ContainsFunc(f.Columns, func(c columnForm) bool { return c.Name == "id" }) {
+			f.Columns = slices.Insert(f.Columns, 0, columnForm{Name: "id", Type: "string"})
+		}
+		rule, err := f.rule()
+		if err != nil {
+			return nil, nil, err
+		}
+		t := store.Tab{Name: f.Name}
+		for _, c := range f.Columns {
+			t.Columns = append(t.Columns, c.Name)
+		}
+		tabs, rules[f.Name] = append(tabs, t), rule
+	}
+	if len(tabs) == 0 {
+		return nil, nil, errors.New("add at least one tab")
+	}
+	return tabs, rules, nil
 }
 
 // create makes a spreadsheet with the user's own credentials, so it lands in their Drive.
@@ -122,59 +163,6 @@ func (d *Dashboard) create(ctx context.Context, userID int64, title string, tabs
 		return "", errors.New("store cannot create spreadsheets")
 	}
 	return c.Create(ctx, title, tabs)
-}
-
-// parseSchema reads one tab per line, as "Tab: column, column". A column marked "*column" is the
-// tab's key column, returned in keys by tab name. A tab without one gets an id column first unless
-// it lists one, since the API finds its rows by id.
-func parseSchema(s string) (tabs []store.Tab, keys map[string]string, err error) {
-	for line := range strings.Lines(s) {
-		name, cols, _ := strings.Cut(line, ":")
-		name = strings.TrimSpace(name)
-		if name == "" && strings.TrimSpace(cols) == "" {
-			continue
-		}
-		switch {
-		case name == "":
-			return nil, nil, fmt.Errorf("tab name missing in %q", strings.TrimSpace(line))
-		case strings.Contains(name, "/"):
-			return nil, nil, fmt.Errorf("tab %q: name must not contain /", name)
-		case slices.ContainsFunc(tabs, func(t store.Tab) bool { return strings.EqualFold(t.Name, name) }):
-			return nil, nil, fmt.Errorf("tab %q is listed twice", name)
-		}
-		t, key := store.Tab{Name: name}, ""
-		for c := range strings.SplitSeq(cols, ",") {
-			if c = strings.TrimSpace(c); c == "" {
-				continue
-			}
-			if k, ok := strings.CutPrefix(c, "*"); ok {
-				if c = strings.TrimSpace(k); c == "" {
-					return nil, nil, fmt.Errorf("tab %q: * needs a column name after it", name)
-				}
-				if key != "" {
-					return nil, nil, fmt.Errorf("tab %q: only one column can be marked * as the key", name)
-				}
-				key = c
-			}
-			if slices.Contains(t.Columns, c) {
-				return nil, nil, fmt.Errorf("tab %q: column %q is listed twice", name, c)
-			}
-			t.Columns = append(t.Columns, c)
-		}
-		if key != "" {
-			if keys == nil {
-				keys = map[string]string{}
-			}
-			keys[name] = key
-		} else if !slices.Contains(t.Columns, "id") {
-			t.Columns = slices.Insert(t.Columns, 0, "id")
-		}
-		tabs = append(tabs, t)
-	}
-	if len(tabs) == 0 {
-		return nil, nil, errors.New("list at least one tab, such as \"Orders: item, qty\"")
-	}
-	return tabs, keys, nil
 }
 
 // opsPreset is a named set of ops that a tab row's menu turns on at once. Ops lists them in
