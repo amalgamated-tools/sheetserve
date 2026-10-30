@@ -101,3 +101,28 @@ func TestRejectsProjectID(t *testing.T) {
 		t.Errorf("got %v", err)
 	}
 }
+
+// A preview names the relay it signs in through; the relay lists the origins it serves.
+func TestRelay(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SHEETSERVE_AUTH_RELAY", "https://sheets.example/auth/relay")
+	t.Setenv("SHEETSERVE_RELAY_ORIGINS", "https://sheetserve-pr-*.onrender.com, http://localhost:*")
+	c, err := FromEnv()
+	if err != nil || c.AuthRelay != "https://sheets.example/auth/relay" ||
+		!slices.Equal(c.RelayOrigins, []string{"https://sheetserve-pr-*.onrender.com", "http://localhost:*"}) {
+		t.Fatalf("relay: %+v %v", c, err)
+	}
+	for _, o := range []string{"sheetserve-pr-*.onrender.com", "ftp://a.example", "https://a.example/", "https://[a", "https://"} {
+		t.Setenv("SHEETSERVE_RELAY_ORIGINS", o)
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("bad relay origin %q accepted", o)
+		}
+	}
+	t.Setenv("SHEETSERVE_RELAY_ORIGINS", "")
+	for _, r := range []string{"/auth/relay", "https://sheets.example/auth/relay#preview", "https://sheets.example/auth/relay#"} {
+		t.Setenv("SHEETSERVE_AUTH_RELAY", r)
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("bad SHEETSERVE_AUTH_RELAY %q accepted", r)
+		}
+	}
+}

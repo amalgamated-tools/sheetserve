@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -18,18 +19,14 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/testutil/oteltest"
 )
 
-// The OAuth callback checks state, stores the refresh token encrypted, and starts a session.
-func TestSignIn(t *testing.T) {
-	logs := oteltest.CaptureLogs(t)
-	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+// fakeGoogle returns a Google that signs in through a fake Google, which accepts "good-code" when it
+// was issued for redirect.
+func fakeGoogle(t *testing.T, d *db.DB, redirect string) *Google {
+	t.Helper()
 	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
-			if r.FormValue("code") != "good-code" || r.FormValue("code_verifier") == "" {
+			if r.FormValue("code") != "good-code" || r.FormValue("code_verifier") == "" || r.FormValue("redirect_uri") != redirect {
 				http.Error(w, "bad code", 400)
 				return
 			}
@@ -43,10 +40,22 @@ func TestSignIn(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"sub": "123", "email": "carol@example.com"})
 		}
 	}))
-	defer google.Close()
-	g := New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret",
+	t.Cleanup(google.Close)
+	g := New(d, &oauth2.Config{ClientID: "cid", ClientSecret: "csecret", RedirectURL: redirect,
 		Endpoint: oauth2.Endpoint{AuthURL: google.URL + "/auth", TokenURL: google.URL + "/token"}})
 	g.UserinfoURL = google.URL + "/userinfo"
+	return g
+}
+
+// The OAuth callback checks state, stores the refresh token encrypted, and starts a session.
+func TestSignIn(t *testing.T) {
+	logs := oteltest.CaptureLogs(t)
+	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	g := fakeGoogle(t, d, "")
 	var signedIn []int64
 	g.OnSignIn = func(id int64) { signedIn = append(signedIn, id) }
 	mux := chi.NewRouter()
@@ -121,5 +130,69 @@ func TestSignIn(t *testing.T) {
 	_ = resp.Body.Close()
 	if _, body := get("/me"); body != "" {
 		t.Errorf("current user after logout: %q", body)
+	}
+}
+
+// A preview signs in through another server's relay: its state names the preview, the relay sends
+// Google's answer back to the preview's callback, and the relay refuses origins it doesn't list.
+func TestRelay(t *testing.T) {
+	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	relay := New(d, &oauth2.Config{})
+	relay.RelayOrigins = []string{"https://nope.example", "http://127.0.0.1:*"}
+	relayMux := chi.NewRouter()
+	relay.Routes(relayMux)
+	relaySrv := httptest.NewServer(relayMux)
+	defer relaySrv.Close()
+
+	g := fakeGoogle(t, d, relaySrv.URL+"/auth/relay")
+	mux := chi.NewRouter()
+	g.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	g.Origin = srv.URL
+
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(srv.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	q := loc.Query()
+	if q.Get("redirect_uri") != relaySrv.URL+"/auth/relay" {
+		t.Fatalf("redirect_uri: %q", q.Get("redirect_uri"))
+	}
+	resp, err = c.Get(relaySrv.URL + "/auth/relay?code=good-code&state=" + url.QueryEscape(q.Get("state")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	next := resp.Header.Get("Location")
+	if resp.StatusCode != http.StatusFound || !strings.HasPrefix(next, srv.URL+"/auth/callback?code=good-code&state=") {
+		t.Fatalf("relay: %d %q", resp.StatusCode, next)
+	}
+	if resp, err = c.Get(next); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Set-Cookie") == "" {
+		t.Errorf("callback after relay: %d", resp.StatusCode)
+	}
+
+	for _, origin := range []string{"https://evil.example", "http://127.0.0.1:1/x", "http://evil.example?127.0.0.1:1", ""} {
+		state := "s." + base64.RawURLEncoding.EncodeToString([]byte(origin))
+		resp, err := c.Get(relaySrv.URL + "/auth/relay?code=c&state=" + url.QueryEscape(state))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("relay to %q: %d %q", origin, resp.StatusCode, resp.Header.Get("Location"))
+		}
 	}
 }

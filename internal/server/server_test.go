@@ -100,6 +100,7 @@ func TestRouteTable(t *testing.T) {
 		"GET /",
 		"GET /app/token",
 		"GET /auth/callback",
+		"GET /auth/relay",
 		"GET /keys",
 		"GET /login",
 		"GET /openapi.json",
@@ -125,5 +126,26 @@ func TestRouteTable(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("routes:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A server signs in through SHEETSERVE_AUTH_RELAY unless it is the relay, and names itself in the state.
+func TestAuthRelay(t *testing.T) {
+	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	for _, tc := range []struct{ base, redirect, origin string }{
+		{"https://sheets.example", "https://sheets.example/auth/callback", ""},
+		{"https://sheets-pr-4.example/", "https://sheets.example/auth/relay", "https://sheets-pr-4.example"},
+	} {
+		s, err := New(t.Context(), WithDB(d), WithConfig(&config.Config{BaseURL: tc.base, AuthRelay: "https://sheets.example/auth/relay"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.auth.OAuth.RedirectURL != tc.redirect || s.auth.Origin != tc.origin {
+			t.Errorf("%s: redirect %q, origin %q", tc.base, s.auth.OAuth.RedirectURL, s.auth.Origin)
+		}
 	}
 }
