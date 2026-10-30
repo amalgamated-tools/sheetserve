@@ -24,7 +24,10 @@ Google Cloud setup:
 2. Configure the OAuth consent screen with the scopes `openid`, `email` and `.../auth/drive.file`.
    `drive.file` lets the app open only the spreadsheets a user picks, so it does not need restricted-scope verification.
    While the app is in "Testing" status, Google expires refresh tokens after 7 days and only test users can sign in.
-   Publish the app for real use.
+   Publish the app for real use. Google asks for a home page, a privacy policy and terms of service:
+   use `<base URL>/`, `<base URL>/privacy` and `<base URL>/terms`. Set `SHEETSERVE_OPERATOR` and `SHEETSERVE_CONTACT` so they
+   name you, and read them before you publish. If only your Google Workspace's accounts sign in, set the user type to
+   "Internal" instead.
 3. Create an OAuth client of type "Web application" with the redirect URI `<base URL>/auth/callback`.
 4. Create an API key for the Picker, restricted to the Picker API and your site.
 
@@ -40,6 +43,9 @@ Environment variables:
 | `SHEETSERVE_DB` | Optional. SQLite file path. Defaults to `sheetserve.db`. |
 | `SHEETSERVE_CACHE_TTL` | Optional. How long to cache reads, such as `60s`. Defaults to no cache. |
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
+| `SHEETSERVE_SIGNUP` | Optional. `approval`, the default, makes new users wait for an admin. `open` lets anyone who signs in use the server. See [Users](#users). |
+| `SHEETSERVE_OPERATOR`, `SHEETSERVE_CONTACT` | Optional. Who runs the server, such as `Acme Inc.`, and an email address or URL to reach them. The privacy policy and terms name them. |
+| `SHEETSERVE_AUTH_RELAY`, `SHEETSERVE_RELAY_ORIGINS` | Optional. Sign-in for preview deploys. See [Preview deploys](#preview-deploys). |
 | `PORT` | Optional. Listen port. Defaults to `8085`. |
 | `OTEL_*` | Optional. The standard OpenTelemetry variables, such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. Traces, metrics and logs export over OTLP. Set `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` to `none` to turn one off. |
 | `SHEETSERVE_GOOGLE_READS_PER_MINUTE`, `SHEETSERVE_GOOGLE_WRITES_PER_MINUTE` | Optional. Your Cloud project's Google Sheets API quotas. Default `300` each. See [Google quotas](#google-quotas). |
@@ -108,9 +114,14 @@ and saves the column types. A tab with no key column gets an `id` column first, 
 
 A key acts through the Google account of the user who made it.
 
+If Google refuses that account's sign-in, because it expired or the user revoked it, every dashboard page shows a
+**Reconnect Google** button and the user's keys get `503` until they sign in again.
+
 ## Users
 
-The first person to sign in becomes the admin. Everyone after that waits as pending until an admin approves them on the Users page.
+The first person to sign in becomes the admin. By default everyone after that waits as pending until an admin approves them on
+the Users page. With `SHEETSERVE_SIGNUP=open`, such as for a hosted service anyone can use, new users are members as soon as
+they sign in, and an admin can still set someone to pending to suspend them.
 Pending users can't add spreadsheets or make keys, and their keys return `403`.
 
 | Role | Can |
@@ -154,6 +165,7 @@ A successful create returns `201`. Errors use these status codes:
 | `409` | A create with a key value that exists, a key value that more than one row holds, or rows that kept moving during an update or delete |
 | `429` | A Google quota is used up. `Retry-After` says when to try again. See [Google quotas](#google-quotas). |
 | `502` | A Google API error |
+| `503` | Google refused the key owner's sign-in: it expired or they revoked it. They must sign in to the dashboard again. |
 
 Error bodies look like `{"error": "..."}`. Google API error details go to the log only.
 
@@ -206,6 +218,29 @@ Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and 
 
 `docker build -t sheetserve .`, or use `render.yaml` on Render.
 After deploying on Render, fill in the `GOOGLE_*` and `SHEETSERVE_SECRET` variables. The database lives on the service's disk at `/var/data`.
+
+### Preview deploys
+
+Google accepts only redirect URIs that are registered in advance, with no wildcards.
+A preview deploy, such as `https://sheetserve-pr-42.onrender.com`, can't sign in with its own URL.
+Instead, previews sign in through the main server's relay:
+
+1. Add `<base URL>/auth/relay` to the OAuth client's redirect URIs, next to `<base URL>/auth/callback`.
+2. Set these on the main service. Render copies them to its previews.
+
+   ```sh
+   SHEETSERVE_AUTH_RELAY=https://sheetserve.onrender.com/auth/relay
+   SHEETSERVE_RELAY_ORIGINS=https://sheetserve-pr-*.onrender.com
+   ```
+
+3. Leave `SHEETSERVE_BASE_URL` unset on Render, so that each preview uses its own `RENDER_EXTERNAL_URL`.
+4. Add each preview's URL, such as `https://sheetserve-pr-42.onrender.com/*`, to the Picker API key's website restrictions.
+   These restrictions allow a `*` only for a whole subdomain, so `sheetserve-pr-*` is not accepted.
+   `https://*.onrender.com/*` works, but it lets every site on onrender.com use the key.
+
+A server whose base URL is the relay's ignores `SHEETSERVE_AUTH_RELAY` and signs in directly.
+The relay sends Google's answer only to origins that match `SHEETSERVE_RELAY_ORIGINS`.
+A `*` matches any part of the host. The code it sends on is useless without the preview's PKCE verifier and the client secret.
 
 ## Development
 

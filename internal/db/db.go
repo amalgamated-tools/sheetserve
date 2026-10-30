@@ -27,6 +27,9 @@ import (
 type DB struct {
 	*sql.DB
 	aead cipher.AEAD // encrypts refresh tokens at rest
+	// NewUsers is the role a new user gets on their first sign-in, other than the server's first
+	// user, who is admin. The default, "", means rbac.Pending: they wait for an admin's approval.
+	NewUsers rbac.Role
 }
 
 //go:embed migrations/*.sql
@@ -52,7 +55,7 @@ func Open(path string, secret []byte) (*DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("init %s: %w", path, err)
 	}
-	return &DB{db, aead}, nil
+	return &DB{DB: db, aead: aead}, nil
 }
 
 // migrate applies any migrations in migrations/ that db has not run yet. Add one with `mise run db:new <name>`.
@@ -91,8 +94,9 @@ type User struct {
 	Role  rbac.Role
 }
 
-// UpsertUser records a Google sign-in. An empty refreshToken keeps the stored one. The server's
-// first user becomes admin; later ones wait as pending until an admin approves them.
+// UpsertUser records a Google sign-in. An empty refreshToken keeps the stored one; a new one
+// clears any lost access (see GoogleLost). The server's first user becomes admin; later ones get
+// d.NewUsers.
 func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (int64, error) {
 	var sealed []byte
 	if refreshToken != "" {
@@ -102,8 +106,9 @@ func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (i
 	err := d.QueryRowContext(ctx, `INSERT INTO users (google_sub, email, refresh_token, role)
 		VALUES (?, ?, ?, CASE WHEN EXISTS (SELECT 1 FROM users) THEN ? ELSE ? END)
 		ON CONFLICT (google_sub) DO UPDATE SET email = excluded.email,
-			refresh_token = coalesce(excluded.refresh_token, users.refresh_token)
-		RETURNING id`, sub, email, sealed, rbac.Pending, rbac.Admin).Scan(&id)
+			refresh_token = coalesce(excluded.refresh_token, users.refresh_token),
+			google_lost_at = CASE WHEN excluded.refresh_token IS NULL THEN users.google_lost_at END
+		RETURNING id`, sub, email, sealed, cmp.Or(d.NewUsers, rbac.Pending), rbac.Admin).Scan(&id)
 	return id, err
 }
 
@@ -175,6 +180,20 @@ func (d *DB) RefreshToken(ctx context.Context, userID int64) (string, error) {
 		return "", errors.New("no refresh token; sign in again")
 	}
 	return d.decrypt(sealed)
+}
+
+// LoseGoogle records that Google refused userID's refresh token, unless it already has.
+func (d *DB) LoseGoogle(ctx context.Context, userID int64) error {
+	_, err := d.ExecContext(ctx, `UPDATE users SET google_lost_at = coalesce(google_lost_at, ?) WHERE id = ?`,
+		time.Now().Unix(), userID)
+	return err
+}
+
+// GoogleLost reports whether Google refused userID's refresh token since they last signed in.
+func (d *DB) GoogleLost(ctx context.Context, userID int64) (bool, error) {
+	var lost bool
+	err := d.QueryRowContext(ctx, `SELECT google_lost_at IS NOT NULL FROM users WHERE id = ?`, userID).Scan(&lost)
+	return lost, err
 }
 
 const SessionTTL = 30 * 24 * time.Hour

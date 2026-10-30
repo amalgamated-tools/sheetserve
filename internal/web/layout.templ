@@ -62,6 +62,13 @@ templ layout(s shell, scripts ...string) {
 			</div>
 		</div>
 		<main>
+			if s.GoogleLost {
+				<div class="flash error" role="alert">
+					<strong>sheetserve lost access to your Google account.</strong>
+					Google says your sign-in expired or was revoked, so your spreadsheets can't be read and your API keys get 503.
+					<div class="row"><a class="button primary" href="/login">Reconnect Google</a></div>
+				</div>
+			}
 			<div id="flash">
 				if s.Error != "" {
 					<p class="flash error" role="alert">{ s.Error }</p>
@@ -75,6 +82,7 @@ templ layout(s shell, scripts ...string) {
 				}
 			</div>
 			{ children... }
+			@legalLinks()
 		</main>
 		<script src="/static/app.js"></script>
 		for _, src := range scripts {

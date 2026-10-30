@@ -189,6 +189,72 @@ func TestRoles(t *testing.T) {
 	}
 }
 
+// Lost Google access stays until a sign-in brings a new refresh token.
+func TestGoogleLost(t *testing.T) {
+	db, err := Open(t.TempDir()+"/lost.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	id, err := db.UpsertUser(ctx, "a", "a@example.com", "rt1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost := func() bool {
+		t.Helper()
+		l, err := db.GoogleLost(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	if lost() {
+		t.Error("lost before any refusal")
+	}
+	for range 2 { // a second refusal changes nothing
+		if err := db.LoseGoogle(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.UpsertUser(ctx, "a", "a@example.com", ""); err != nil || !lost() {
+		t.Errorf("a sign-in without a refresh token cleared it: %v", err)
+	}
+	if _, err := db.UpsertUser(ctx, "a", "a@example.com", "rt2"); err != nil || lost() {
+		t.Errorf("a sign-in with a new refresh token kept it: %v", err)
+	}
+}
+
+// With open sign-up, new users are members at once; the first is still admin, and a returning
+// user keeps the role an admin gave them.
+func TestOpenSignup(t *testing.T) {
+	db, err := Open(t.TempDir()+"/open.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.NewUsers = rbac.Member
+	ctx := context.Background()
+	for _, sub := range []string{"a", "b"} {
+		if _, err := db.UpsertUser(ctx, sub, sub+"@example.com", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	users, err := db.Users(ctx)
+	if err != nil || len(users) != 2 || users[0].Role != rbac.Admin || users[1].Role != rbac.Member {
+		t.Fatalf("users: %+v %v", users, err)
+	}
+	if err := db.SetRole(ctx, users[1].ID, rbac.Pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertUser(ctx, "b", "b@example.com", ""); err != nil {
+		t.Fatal(err)
+	}
+	if users, err := db.Users(ctx); err != nil || len(users) != 2 || users[1].Role != rbac.Pending {
+		t.Errorf("a suspended user signing in again: %+v %v", users, err)
+	}
+}
+
 // A key records when it was made, and when it was last used, at most once a minute.
 func TestKeyTimes(t *testing.T) {
 	db, err := Open(t.TempDir()+"/keys.db", make([]byte, 32))

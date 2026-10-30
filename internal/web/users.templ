@@ -7,11 +7,15 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 )
 
-templ usersView(s shell, users []userView) {
+templ usersView(s shell, users []userView, openSignup bool) {
 	@layout(s) {
 		<div class="page-head">
 			<h1>Users</h1>
-			<p>Everyone who has signed in. New users wait as pending until you approve them. Pending users can't change anything, and their keys get 403.</p>
+			if openSignup {
+				<p>Everyone who has signed in. Sign-up is open, so new users are members as soon as they sign in. To suspend someone, set them to pending: pending users can't change anything, and their keys get 403.</p>
+			} else {
+				<p>Everyone who has signed in. New users wait as pending until you approve them. Pending users can't change anything, and their keys get 403.</p>
+			}
 		</div>
 		<section class="card">
 			<div class="table-wrap">

@@ -804,7 +804,6 @@ func TestAuditLog(t *testing.T) {
 	}
 }
 
-
 // One form per spreadsheet saves every tab's ops at once.
 func TestSaveAllOps(t *testing.T) {
 	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{}})
@@ -876,5 +875,87 @@ func TestFavicon(t *testing.T) {
 	}
 	if s, body := get(t, c, srv.URL+"/static/favicon.svg", ""); s != 200 || !strings.Contains(body, "<svg") {
 		t.Errorf("favicon.svg: %d", s)
+	}
+}
+
+// lostStore fails every call as Google does when a refresh token expired or was revoked, and
+// records it as auth's token source would.
+type lostStore struct {
+	failingStore
+	lose func()
+}
+
+func (l lostStore) Tabs(context.Context, string) ([]string, error) {
+	l.lose()
+	return nil, l.err
+}
+
+// When Google refuses a user's sign-in, every page says so and offers to reconnect, until a new
+// sign-in brings a fresh refresh token.
+func TestGoogleLost(t *testing.T) {
+	var dash *Dashboard
+	var id int64
+	lost := &oauth2.RetrieveError{ErrorCode: "invalid_grant"}
+	dash, srv := newTestDashboard(t, lostStore{failingStore{lost}, func() { _ = dash.DB.LoseGoogle(context.Background(), id) }})
+	alice := signInAs(t, dash, srv, "alice")
+	if err := dash.DB.QueryRow(`SELECT id FROM users WHERE google_sub = 'alice'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); strings.Contains(body, "Reconnect Google") {
+		t.Error("banner before Google refused anything")
+	}
+	s, body := post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}})
+	if s != 502 || !strings.Contains(body, "Google access expired or was revoked") || !strings.Contains(body, `href="/login">Reconnect Google`) {
+		t.Errorf("add sheet with lost access: %d %s", s, body)
+	}
+	if _, body := get(t, alice, srv.URL+"/keys", ""); !strings.Contains(body, "Reconnect Google") {
+		t.Error("the banner should stay on every page")
+	}
+	if _, err := dash.DB.UpsertUser(context.Background(), "alice", "alice@example.com", "rt-new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := get(t, alice, srv.URL+"/sheets", ""); strings.Contains(body, "Reconnect Google") {
+		t.Error("banner after signing in again")
+	}
+}
+
+// The privacy policy and terms are public, name the operator, and are linked from sign-in.
+func TestLegalPages(t *testing.T) {
+	dash, srv := newTestDashboard(t, failingStore{errors.New("unused")})
+	dash.OperatorName, dash.OperatorContact, dash.BaseURL = "Acme", "privacy@acme.example", "https://sheets.acme.example"
+	c := browser(t)
+	if s, body := get(t, c, srv.URL+"/privacy", ""); s != 200 || !strings.Contains(body, "run by Acme") ||
+		!strings.Contains(body, "Limited Use") || !strings.Contains(body, "Contact Acme at privacy@acme.example.") {
+		t.Errorf("privacy: %d %s", s, body)
+	}
+	if s, body := get(t, c, srv.URL+"/terms", ""); s != 200 || !strings.Contains(body, "https://sheets.acme.example") {
+		t.Errorf("terms: %d %s", s, body)
+	}
+	dash.OperatorName, dash.OperatorContact = "", ""
+	if _, body := get(t, c, srv.URL+"/privacy", ""); !strings.Contains(body, "run by the operator of this server") ||
+		!strings.Contains(body, "Contact the operator of this server.") {
+		t.Errorf("privacy without an operator: %s", body)
+	}
+	if _, body := get(t, c, srv.URL+"/", ""); !strings.Contains(body, `href="/privacy"`) || !strings.Contains(body, `href="/terms"`) {
+		t.Errorf("sign-in page lacks legal links: %s", body)
+	}
+}
+
+// With open sign-up, a new user can add spreadsheets at once, and the Users page says how
+// approval works.
+func TestOpenSignup(t *testing.T) {
+	dash, srv := newTestDashboard(t, &fakeStore{})
+	dash.DB.NewUsers, dash.OpenSignup = rbac.Member, true
+	alice := signIn(t, dash, srv, "alice", false)
+	bob := signIn(t, dash, srv, "bob", false)
+	if s, body := get(t, bob, srv.URL+"/sheets", ""); s != 200 || strings.Contains(body, "Waiting for approval") {
+		t.Errorf("new user with open sign-up: %d", s)
+	}
+	if _, body := get(t, alice, srv.URL+"/users", ""); !strings.Contains(body, "Sign-up is open") {
+		t.Error("the Users page should say sign-up is open")
+	}
+	dash.OpenSignup = false
+	if _, body := get(t, alice, srv.URL+"/users", ""); !strings.Contains(body, "wait as pending until you approve them") {
+		t.Error("the Users page should say new users wait")
 	}
 }

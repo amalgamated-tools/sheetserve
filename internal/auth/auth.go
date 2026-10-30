@@ -2,12 +2,16 @@
 package auth
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 // Google handles sign-in with Google, the session cookie, and each user's Google credentials.
@@ -24,6 +29,12 @@ type Google struct {
 	UserinfoURL string
 	// OnSignIn runs after a sign-in stores a fresh refresh token, so cached clients can pick it up.
 	OnSignIn func(userID int64)
+	// Origin is set when OAuth.RedirectURL is another server's relay. Login names it in the state, so
+	// the relay knows where to send Google's answer.
+	Origin string
+	// RelayOrigins are the origins whose sign-ins this server relays, as patterns such as
+	// https://sheetserve-pr-*.onrender.com. A * matches within the host.
+	RelayOrigins []string
 }
 
 // New returns a Google that signs in with oauth and stores users and sessions in d.
@@ -36,28 +47,51 @@ func New(d *db.DB, oauth *oauth2.Config) *Google {
 func (g *Google) Routes(r chi.Router) {
 	r.Get("/login", g.Login)
 	r.Get("/auth/callback", g.Callback)
+	r.Get("/auth/relay", g.Relay)
 	r.With(http.NewCrossOriginProtection().Handler).Post("/logout", g.Logout)
 }
 
 // TokenSource returns userID's Google credentials, from the refresh token they signed in with.
+// When Google refuses the token as expired or revoked, it records that for the dashboard.
 func (g *Google) TokenSource(userID int64) (oauth2.TokenSource, error) {
 	rt, err := g.DB.RefreshToken(context.Background(), userID)
 	if err != nil {
 		return nil, err
 	}
-	return g.OAuth.TokenSource(context.Background(), &oauth2.Token{RefreshToken: rt}), nil
+	return watched{g.OAuth.TokenSource(context.Background(), &oauth2.Token{RefreshToken: rt}), func() {
+		if err := g.DB.LoseGoogle(context.Background(), userID); err != nil {
+			slog.Error("record lost google access", slog.Int64(otelkeys.UserID, userID), slog.Any(otelkeys.Error, err))
+		}
+	}}, nil
+}
+
+// watched is a TokenSource that calls lost when Google refuses its refresh token.
+type watched struct {
+	oauth2.TokenSource
+	lost func()
+}
+
+func (w watched) Token() (*oauth2.Token, error) {
+	tok, err := w.TokenSource.Token()
+	if store.AccessLost(err) {
+		w.lost()
+	}
+	return tok, err
 }
 
 func (g *Google) cookie(name, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: name, Value: value, Path: "/", MaxAge: maxAge,
-		HttpOnly: true, Secure: strings.HasPrefix(g.OAuth.RedirectURL, "https://"), SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: strings.HasPrefix(cmp.Or(g.Origin, g.OAuth.RedirectURL), "https://"), SameSite: http.SameSiteLaxMode,
 	}
 }
 
 // Login sends the browser to Google's consent screen.
 func (g *Google) Login(w http.ResponseWriter, r *http.Request) {
 	state, verifier := rand.Text(), oauth2.GenerateVerifier()
+	if g.Origin != "" {
+		state += "." + base64.RawURLEncoding.EncodeToString([]byte(g.Origin))
+	}
 	http.SetCookie(w, g.cookie("oauth_state", state, 600))
 	http.SetCookie(w, g.cookie("oauth_verifier", verifier, 600))
 	// prompt=consent makes Google return a refresh token on every sign-in, not just the first.
@@ -96,6 +130,35 @@ func (g *Google) Callback(w http.ResponseWriter, r *http.Request) {
 		slog.Int64(otelkeys.UserID, userID), slog.String(otelkeys.UserEmail, email))
 	http.SetCookie(w, g.cookie("session", sess, int(db.SessionTTL.Seconds())))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// Relay receives Google's answer for a sign-in that started on another server, such as a preview
+// deploy, and sends it on to that server's callback. Google only accepts redirect URIs registered in
+// advance, so previews share this one. The code is useless without the other server's PKCE verifier
+// and the client secret.
+func (g *Google) Relay(w http.ResponseWriter, r *http.Request) {
+	_, enc, _ := strings.Cut(r.FormValue("state"), ".")
+	origin, err := base64.RawURLEncoding.DecodeString(enc)
+	if err != nil || !g.relays(string(origin)) {
+		http.Error(w, "unknown sign-in origin", http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, string(origin)+"/auth/callback?"+r.URL.RawQuery, http.StatusFound)
+}
+
+// relays reports whether origin is a bare scheme://host that matches one of RelayOrigins.
+func (g *Google) relays(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.Scheme+"://"+u.Host != origin {
+		return false
+	}
+	for _, p := range g.RelayOrigins {
+		scheme, host, _ := strings.Cut(p, "://")
+		if ok, _ := path.Match(host, u.Host); ok && scheme == u.Scheme {
+			return true
+		}
+	}
+	return false
 }
 
 // signIn exchanges the code, identifies the Google account, and stores its refresh token.
