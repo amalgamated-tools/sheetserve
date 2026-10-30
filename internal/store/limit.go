@@ -88,26 +88,10 @@ func (e *RateLimitError) Seconds() int { return int(math.Ceil(e.RetryAfter.Secon
 // wait takes a token for a call of kind ("read" or "write") by user from the project's bucket, the
 // user's, and the API key's on ctx if any, waiting up to maxWait for all of them.
 func (l *Limiter) wait(ctx context.Context, user int64, kind string) error {
-	scopes := map[string]buckets{"project": l.project}
-	l.mu.Lock()
-	if _, ok := l.users[user]; !ok {
-		l.users[user] = newBuckets(l.perUser)
-	}
-	scopes["user"] = l.users[user]
-	if key, ok := ctx.Value(callerKey{}).(string); ok && key != "" {
-		if _, ok := l.keys[key]; !ok {
-			l.keys[key] = newBuckets(l.perKey)
-		}
-		scopes["key"] = l.keys[key]
-	}
-	l.mu.Unlock()
 	var reserved []*rate.Reservation
 	delay, scope := time.Duration(0), ""
-	for s, b := range scopes {
-		lim := b.read
-		if kind == "write" {
-			lim = b.write
-		}
+	for s, b := range l.scopes(ctx, user) {
+		lim := b.of(kind)
 		if lim == nil {
 			continue
 		}
@@ -143,6 +127,75 @@ func (l *Limiter) wait(ctx context.Context, user int64, kind string) error {
 		cancel()
 		return ctx.Err()
 	}
+}
+
+// scopes returns the buckets a call by user counts against: the project's, the user's, and the API
+// key's on ctx if any.
+func (l *Limiter) scopes(ctx context.Context, user int64) map[string]buckets {
+	scopes := map[string]buckets{"project": l.project}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.users[user]; !ok {
+		l.users[user] = newBuckets(l.perUser)
+	}
+	scopes["user"] = l.users[user]
+	if key, ok := ctx.Value(callerKey{}).(string); ok && key != "" {
+		if _, ok := l.keys[key]; !ok {
+			l.keys[key] = newBuckets(l.perKey)
+		}
+		scopes["key"] = l.keys[key]
+	}
+	return scopes
+}
+
+// of returns the bucket for calls of kind ("read" or "write"), or nil for no limit.
+func (b buckets) of(kind string) *rate.Limiter {
+	if kind == "write" {
+		return b.write
+	}
+	return b.read
+}
+
+// Room is how much of a quota a caller has: of Limit calls a minute, Remaining can be made over
+// the next minute, at most a tenth of Limit of them at once, and Reset is when it's back to Limit.
+type Room struct {
+	Kind             string // "read" or "write"
+	Limit, Remaining int
+	Reset            time.Duration
+}
+
+// Room returns user's room for reads and for writes, made with the API key on ctx if any, from
+// whichever of its budgets has the least. A kind with no limit is left out.
+func (l *Limiter) Room(ctx context.Context, user int64) []Room {
+	scopes := l.scopes(ctx, user)
+	now := time.Now()
+	rooms := make([]Room, 0, 2)
+	for _, kind := range []string{"read", "write"} {
+		var tightest *Room
+		for _, b := range scopes {
+			lim := b.of(kind)
+			if lim == nil {
+				continue
+			}
+			perSecond, burst, tokens := float64(lim.Limit()), float64(lim.Burst()), lim.TokensAt(now)
+			limit := int(math.Round(burst + perSecond*60)) // 90% of the quota; see bucket
+			r := Room{Kind: kind, Limit: limit,
+				Remaining: min(limit, max(0, int(math.Floor(tokens+perSecond*60)))),
+				Reset:     time.Duration(math.Ceil(max(0, burst-tokens)/perSecond)) * time.Second}
+			if tightest == nil || r.Remaining < tightest.Remaining {
+				tightest = &r
+			}
+		}
+		if tightest != nil {
+			rooms = append(rooms, *tightest)
+		}
+	}
+	return rooms
+}
+
+// Roomer is a Store that can say how much quota its caller has left.
+type Roomer interface {
+	Room(ctx context.Context) []Room
 }
 
 // Google is a Store with every optional ability the Google store has.
@@ -191,6 +244,8 @@ func (s *limited) call(ctx context.Context, kind string, fn func() error) error 
 		}
 	}
 }
+
+func (s *limited) Room(ctx context.Context) []Room { return s.l.Room(ctx, s.user) }
 
 func (s *limited) Read(ctx context.Context, id, tab string) (vals [][]any, err error) {
 	err = s.call(ctx, "read", func() error { vals, err = s.g.Read(ctx, id, tab); return err })

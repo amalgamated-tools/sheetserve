@@ -103,3 +103,30 @@ func TestLimit(t *testing.T) {
 		t.Errorf("after too many 429s: %v, %d calls", err, g.calls)
 	}
 }
+
+// Room reports the tightest budget for each kind, and leaves out a kind with no limit.
+func TestRoom(t *testing.T) {
+	ctx := WithCaller(context.Background(), "a")
+	l := NewLimiter(Quota{ReadsPerMinute: 300}, Quota{ReadsPerMinute: 60}, Quota{ReadsPerMinute: 30})
+	rooms := l.Room(ctx, 1)
+	if len(rooms) != 1 || rooms[0] != (Room{Kind: "read", Limit: 27, Remaining: 27}) {
+		t.Fatalf("unused: %+v", rooms)
+	}
+	s := Limit(&fakeGoogle{}, l, 1)
+	for range 2 {
+		if _, err := s.Read(ctx, "SS", "T"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Key a's bucket holds 3 and refills at 0.4 a second, so 2 calls take 5s to come back.
+	r := s.(Roomer).Room(ctx)[0]
+	if r.Limit != 27 || r.Remaining != 25 || r.Reset != 5*time.Second {
+		t.Errorf("after 2 reads: %+v", r)
+	}
+	if r := l.Room(WithCaller(context.Background(), "b"), 1)[0]; r.Remaining != 27 {
+		t.Errorf("key b has its own budget: %+v", r)
+	}
+	if r := l.Room(context.Background(), 1)[0]; r.Limit != 54 || r.Remaining != 52 {
+		t.Errorf("without a key, the user's budget: %+v", r)
+	}
+}

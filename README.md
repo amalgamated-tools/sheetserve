@@ -171,6 +171,16 @@ doesn't refuse calls:
   room, and the dashboard says so.
 - If Google returns `429` anyway, the call is tried twice more, after about 1 and 2 seconds.
 
+Every REST response to a valid key says how much quota the key has left, in the `RateLimit-Policy` and `RateLimit` headers
+of the [IETF draft](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/):
+
+	RateLimit-Policy: "read";q=27;w=60, "write";q=27;w=60
+	RateLimit: "read";r=25;t=5, "write";r=27;t=0
+
+`q` is how many calls the key can make a minute, `r` how many it has left over the next minute, and `t` how many seconds until
+it's back to `q`. Each is from whichever budget, the key's, its user's or the project's, has the least left. At most a tenth of
+`q` can go at once; spread the rest over the minute. MCP responses don't carry these headers.
+
 The `google.limiter.waited`, `google.limiter.refused` and `google.rate_limited` metrics count each case by kind (`read` or
 `write`) and budget (`project`, `user` or `key`). If you raise a quota in the Cloud Console, raise its variable too.
 
