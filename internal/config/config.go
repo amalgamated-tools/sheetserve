@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -37,10 +39,12 @@ type Config struct {
 	GoogleProjectNumber string // GOOGLE_PROJECT_NUMBER
 
 	// Optional server-wide settings
-	DatabaseURL string        // SHEETSERVE_DATABASE_URL
-	CacheTTL    time.Duration // SHEETSERVE_CACHE_TTL
-	CORSOrigins []string      // SHEETSERVE_CORS_ORIGINS
-	Port        int           // PORT
+	DatabaseURL  string        // SHEETSERVE_DATABASE_URL
+	CacheTTL     time.Duration // SHEETSERVE_CACHE_TTL
+	CORSOrigins  []string      // SHEETSERVE_CORS_ORIGINS
+	AuthRelay    string        // SHEETSERVE_AUTH_RELAY
+	RelayOrigins []string      // SHEETSERVE_RELAY_ORIGINS
+	Port         int           // PORT
 
 	// Who runs this server, named in its privacy policy and terms.
 	OperatorName    string // SHEETSERVE_OPERATOR
@@ -65,7 +69,7 @@ func perMinute(name string, def int) (int, error) {
 	return n, nil
 }
 
-// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS, SHEETSERVE_OPERATOR, SHEETSERVE_CONTACT and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
+// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS, SHEETSERVE_AUTH_RELAY, SHEETSERVE_RELAY_ORIGINS, SHEETSERVE_OPERATOR, SHEETSERVE_CONTACT and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
 func FromEnv() (*Config, error) {
 	c := Config{
 		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), os.Getenv("RENDER_EXTERNAL_URL"), "http://localhost:8085"),
@@ -117,6 +121,23 @@ func FromEnv() (*Config, error) {
 		if o = strings.TrimSpace(o); o != "" {
 			c.CORSOrigins = append(c.CORSOrigins, o)
 		}
+	}
+	if c.AuthRelay = os.Getenv("SHEETSERVE_AUTH_RELAY"); c.AuthRelay != "" {
+		// Google rejects redirect URIs that carry a fragment, so catch one here rather than at sign-in.
+		if u, err := url.Parse(c.AuthRelay); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" ||
+			strings.Contains(c.AuthRelay, "#") {
+			return nil, fmt.Errorf("SHEETSERVE_AUTH_RELAY: want a URL such as https://sheets.example.com/auth/relay, got %q", c.AuthRelay)
+		}
+	}
+	for o := range strings.SplitSeq(os.Getenv("SHEETSERVE_RELAY_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o == "" {
+			continue
+		}
+		scheme, host, _ := strings.Cut(o, "://")
+		if _, err := path.Match(host, ""); err != nil || (scheme != "https" && scheme != "http") || host == "" || strings.ContainsAny(host, "/?#@") {
+			return nil, fmt.Errorf("SHEETSERVE_RELAY_ORIGINS: want origins such as https://sheetserve-pr-*.onrender.com, got %q", o)
+		}
+		c.RelayOrigins = append(c.RelayOrigins, o)
 	}
 	return &c, nil
 }
