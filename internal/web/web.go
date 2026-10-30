@@ -95,6 +95,8 @@ type Dashboard struct {
 	Tenants   *tenancy.Tenants
 	PickerKey string // browser API key for Google Picker
 	AppID     string // Cloud project number, so picked files are granted to this app
+	// OpenSignup is set when new users don't need an admin's approval; the Users page says so.
+	OpenSignup bool
 	// Who runs this server, for its privacy policy and terms. Both are optional.
 	OperatorName, OperatorContact string
 	BaseURL                       string
@@ -255,7 +257,7 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, v vie
 			http.Error(w, "could not load the users", http.StatusInternalServerError)
 			return
 		}
-		page = usersView(s, users)
+		page = usersView(s, users, d.OpenSignup)
 	default:
 		s.Title = "Spreadsheets"
 		page = sheetsView(s, sheets, d.PickerKey, d.AppID)

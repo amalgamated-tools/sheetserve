@@ -43,6 +43,7 @@ Environment variables:
 | `SHEETSERVE_DB` | Optional. SQLite file path. Defaults to `sheetserve.db`. |
 | `SHEETSERVE_CACHE_TTL` | Optional. How long to cache reads, such as `60s`. Defaults to no cache. |
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
+| `SHEETSERVE_SIGNUP` | Optional. `approval`, the default, makes new users wait for an admin. `open` lets anyone who signs in use the server. See [Users](#users). |
 | `SHEETSERVE_OPERATOR`, `SHEETSERVE_CONTACT` | Optional. Who runs the server, such as `Acme Inc.`, and an email address or URL to reach them. The privacy policy and terms name them. |
 | `SHEETSERVE_AUTH_RELAY`, `SHEETSERVE_RELAY_ORIGINS` | Optional. Sign-in for preview deploys. See [Preview deploys](#preview-deploys). |
 | `PORT` | Optional. Listen port. Defaults to `8085`. |
@@ -116,7 +117,9 @@ If Google refuses that account's sign-in, because it expired or the user revoked
 
 ## Users
 
-The first person to sign in becomes the admin. Everyone after that waits as pending until an admin approves them on the Users page.
+The first person to sign in becomes the admin. By default everyone after that waits as pending until an admin approves them on
+the Users page. With `SHEETSERVE_SIGNUP=open`, such as for a hosted service anyone can use, new users are members as soon as
+they sign in, and an admin can still set someone to pending to suspend them.
 Pending users can't add spreadsheets or make keys, and their keys return `403`.
 
 | Role | Can |

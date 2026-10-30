@@ -907,3 +907,22 @@ func TestLegalPages(t *testing.T) {
 		t.Errorf("sign-in page lacks legal links: %s", body)
 	}
 }
+
+// With open sign-up, a new user can add spreadsheets at once, and the Users page says how
+// approval works.
+func TestOpenSignup(t *testing.T) {
+	dash, srv := newTestDashboard(t, &fakeStore{})
+	dash.DB.NewUsers, dash.OpenSignup = rbac.Member, true
+	alice := signIn(t, dash, srv, "alice", false)
+	bob := signIn(t, dash, srv, "bob", false)
+	if s, body := get(t, bob, srv.URL+"/sheets", ""); s != 200 || strings.Contains(body, "Waiting for approval") {
+		t.Errorf("new user with open sign-up: %d", s)
+	}
+	if _, body := get(t, alice, srv.URL+"/users", ""); !strings.Contains(body, "Sign-up is open") {
+		t.Error("the Users page should say sign-up is open")
+	}
+	dash.OpenSignup = false
+	if _, body := get(t, alice, srv.URL+"/users", ""); !strings.Contains(body, "wait as pending until you approve them") {
+		t.Error("the Users page should say new users wait")
+	}
+}

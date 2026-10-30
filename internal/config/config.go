@@ -45,6 +45,7 @@ type Config struct {
 	AuthRelay    string        // SHEETSERVE_AUTH_RELAY
 	RelayOrigins []string      // SHEETSERVE_RELAY_ORIGINS
 	Port         int           // PORT
+	OpenSignup   bool          // SHEETSERVE_SIGNUP=open: new users can use the server without an admin's approval
 
 	// Who runs this server, named in its privacy policy and terms.
 	OperatorName    string // SHEETSERVE_OPERATOR
@@ -69,7 +70,7 @@ func perMinute(name string, def int) (int, error) {
 	return n, nil
 }
 
-// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS, SHEETSERVE_AUTH_RELAY, SHEETSERVE_RELAY_ORIGINS, SHEETSERVE_OPERATOR, SHEETSERVE_CONTACT and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
+// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS, SHEETSERVE_AUTH_RELAY, SHEETSERVE_RELAY_ORIGINS, SHEETSERVE_OPERATOR, SHEETSERVE_CONTACT, SHEETSERVE_SIGNUP and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
 func FromEnv() (*Config, error) {
 	c := Config{
 		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), os.Getenv("RENDER_EXTERNAL_URL"), "http://localhost:8085"),
@@ -90,6 +91,13 @@ func FromEnv() (*Config, error) {
 	}
 	c.Port = p
 	c.DatabaseURL = cmp.Or(os.Getenv("SHEETSERVE_DB"), "sheetserve.db")
+	switch signup := os.Getenv("SHEETSERVE_SIGNUP"); signup {
+	case "", "approval":
+	case "open":
+		c.OpenSignup = true
+	default:
+		return nil, fmt.Errorf("SHEETSERVE_SIGNUP: want approval or open, got %q", signup)
+	}
 	c.OperatorName, c.OperatorContact = os.Getenv("SHEETSERVE_OPERATOR"), os.Getenv("SHEETSERVE_CONTACT")
 
 	if ttl := os.Getenv("SHEETSERVE_CACHE_TTL"); ttl != "" {

@@ -27,6 +27,9 @@ import (
 type DB struct {
 	*sql.DB
 	aead cipher.AEAD // encrypts refresh tokens at rest
+	// NewUsers is the role a new user gets on their first sign-in, other than the server's first
+	// user, who is admin. The default, "", means rbac.Pending: they wait for an admin's approval.
+	NewUsers rbac.Role
 }
 
 //go:embed migrations/*.sql
@@ -52,7 +55,7 @@ func Open(path string, secret []byte) (*DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("init %s: %w", path, err)
 	}
-	return &DB{db, aead}, nil
+	return &DB{DB: db, aead: aead}, nil
 }
 
 // migrate applies any migrations in migrations/ that db has not run yet. Add one with `mise run db:new <name>`.
@@ -92,8 +95,8 @@ type User struct {
 }
 
 // UpsertUser records a Google sign-in. An empty refreshToken keeps the stored one; a new one
-// clears any lost access (see GoogleLost). The server's
-// first user becomes admin; later ones wait as pending until an admin approves them.
+// clears any lost access (see GoogleLost). The server's first user becomes admin; later ones get
+// d.NewUsers.
 func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (int64, error) {
 	var sealed []byte
 	if refreshToken != "" {
@@ -105,7 +108,7 @@ func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (i
 		ON CONFLICT (google_sub) DO UPDATE SET email = excluded.email,
 			refresh_token = coalesce(excluded.refresh_token, users.refresh_token),
 			google_lost_at = CASE WHEN excluded.refresh_token IS NULL THEN users.google_lost_at END
-		RETURNING id`, sub, email, sealed, rbac.Pending, rbac.Admin).Scan(&id)
+		RETURNING id`, sub, email, sealed, cmp.Or(d.NewUsers, rbac.Pending), rbac.Admin).Scan(&id)
 	return id, err
 }
 

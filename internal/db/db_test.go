@@ -219,3 +219,33 @@ func TestGoogleLost(t *testing.T) {
 		t.Errorf("a sign-in with a new refresh token kept it: %v", err)
 	}
 }
+
+// With open sign-up, new users are members at once; the first is still admin, and a returning
+// user keeps the role an admin gave them.
+func TestOpenSignup(t *testing.T) {
+	db, err := Open(t.TempDir()+"/open.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.NewUsers = rbac.Member
+	ctx := context.Background()
+	for _, sub := range []string{"a", "b"} {
+		if _, err := db.UpsertUser(ctx, sub, sub+"@example.com", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	users, err := db.Users(ctx)
+	if err != nil || len(users) != 2 || users[0].Role != rbac.Admin || users[1].Role != rbac.Member {
+		t.Fatalf("users: %+v %v", users, err)
+	}
+	if err := db.SetRole(ctx, users[1].ID, rbac.Pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertUser(ctx, "b", "b@example.com", ""); err != nil {
+		t.Fatal(err)
+	}
+	if users, err := db.Users(ctx); err != nil || len(users) != 2 || users[1].Role != rbac.Pending {
+		t.Errorf("a suspended user signing in again: %+v %v", users, err)
+	}
+}
