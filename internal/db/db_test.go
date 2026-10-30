@@ -184,6 +184,42 @@ func TestRoles(t *testing.T) {
 	}
 }
 
+// Lost Google access stays until a sign-in brings a new refresh token.
+func TestGoogleLost(t *testing.T) {
+	db, err := Open(t.TempDir()+"/lost.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	id, err := db.UpsertUser(ctx, "a", "a@example.com", "rt1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost := func() bool {
+		t.Helper()
+		l, err := db.GoogleLost(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	if lost() {
+		t.Error("lost before any refusal")
+	}
+	for range 2 { // a second refusal changes nothing
+		if err := db.LoseGoogle(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.UpsertUser(ctx, "a", "a@example.com", ""); err != nil || !lost() {
+		t.Errorf("a sign-in without a refresh token cleared it: %v", err)
+	}
+	if _, err := db.UpsertUser(ctx, "a", "a@example.com", "rt2"); err != nil || lost() {
+		t.Errorf("a sign-in with a new refresh token kept it: %v", err)
+	}
+}
+
 // With open sign-up, new users are members at once; the first is still admin, and a returning
 // user keeps the role an admin gave them.
 func TestOpenSignup(t *testing.T) {

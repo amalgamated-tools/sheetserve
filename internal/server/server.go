@@ -93,19 +93,28 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 	if s.cfg.OpenSignup {
 		s.db.NewUsers = rbac.Member
 	}
+
+	base := strings.TrimSuffix(s.cfg.BaseURL, "/")
+	redirect, origin := base+"/auth/callback", ""
+	// A server that isn't the relay itself, such as a preview deploy, signs in through it.
+	if r := s.cfg.AuthRelay; r != "" && !strings.HasPrefix(r, base+"/") {
+		redirect, origin = r, base
+	}
 	s.auth = auth.New(s.db, &oauth2.Config{
 		ClientID:     s.cfg.GoogleClientID,
 		ClientSecret: s.cfg.GoogleClientSecret,
 		Endpoint:     google.Endpoint,
-		RedirectURL:  strings.TrimSuffix(s.cfg.BaseURL, "/") + "/auth/callback",
+		RedirectURL:  redirect,
 		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
 	})
+	s.auth.Origin, s.auth.RelayOrigins = origin, s.cfg.RelayOrigins
 	s.limiter = store.NewLimiter(s.cfg.ProjectQuota, s.cfg.UserQuota, s.cfg.KeyQuota)
 	s.tenants = &tenancy.Tenants{DB: s.db, Global: s.cfg, NewStore: s.newStore}
 	s.auth.OnSignIn = s.tenants.Invalidate // pick up the new refresh token
 	s.dash = &web.Dashboard{
 		DB: s.db, Auth: s.auth, Tenants: s.tenants, OpenSignup: s.cfg.OpenSignup,
 		PickerKey: s.cfg.GooglePickerAPIKey, AppID: s.cfg.GoogleProjectNumber,
+		OperatorName: s.cfg.OperatorName, OperatorContact: s.cfg.OperatorContact, BaseURL: s.cfg.BaseURL,
 	}
 	s.setupRoutes(ctx)
 	return s, nil

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
@@ -424,6 +425,21 @@ type failStore struct {
 
 func (f *failStore) Read(context.Context, string, string) ([][]any, error) { return nil, f.err }
 
+// An owner whose Google sign-in expired or was revoked makes their keys get 503, saying why.
+func TestGoogleAccessLost(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{"Orders": {Ops: []string{"read"}}}}},
+		Keys:         []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, service.New(cfg, &failStore{err: fmt.Errorf("read: %w", &oauth2.RetrieveError{ErrorCode: "invalid_grant"})}, 0)).Mux()
+	if s, body := call(t, h, "GET", "/v1/shop/Orders", "admin-key", ""); s != 503 || !strings.Contains(body, "must reconnect their Google account") {
+		t.Errorf("got %d %s", s, body)
+	}
+}
+
 // Google's rate limit reaches callers as 429 with Retry-After; other Google errors stay 502.
 func TestGoogleRateLimit(t *testing.T) {
 	cfg := &db.Settings{
@@ -752,7 +768,9 @@ type googleStore struct {
 	fake *fakeStore
 }
 
-func (g googleStore) Read(ctx context.Context, id, tab string) ([][]any, error) { return g.fake.Read(ctx, id, tab) }
+func (g googleStore) Read(ctx context.Context, id, tab string) ([][]any, error) {
+	return g.fake.Read(ctx, id, tab)
+}
 
 // Each response tells the caller how much Google quota its key has left.
 func TestRateLimitHeaders(t *testing.T) {
