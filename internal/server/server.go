@@ -109,6 +109,7 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 	s.dash = &web.Dashboard{
 		DB: s.db, Auth: s.auth, Tenants: s.tenants,
 		PickerKey: s.cfg.GooglePickerAPIKey, AppID: s.cfg.GoogleProjectNumber,
+		OperatorName: s.cfg.OperatorName, OperatorContact: s.cfg.OperatorContact, BaseURL: s.cfg.BaseURL,
 	}
 	s.setupRoutes(ctx)
 	return s, nil

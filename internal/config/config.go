@@ -46,6 +46,10 @@ type Config struct {
 	RelayOrigins []string      // SHEETSERVE_RELAY_ORIGINS
 	Port         int           // PORT
 
+	// Who runs this server, named in its privacy policy and terms.
+	OperatorName    string // SHEETSERVE_OPERATOR
+	OperatorContact string // SHEETSERVE_CONTACT
+
 	// Google Sheets API per-minute quotas the server keeps under; 0 means no limit.
 	ProjectQuota store.Quota // SHEETSERVE_GOOGLE_READS_PER_MINUTE, SHEETSERVE_GOOGLE_WRITES_PER_MINUTE
 	UserQuota    store.Quota // SHEETSERVE_GOOGLE_USER_READS_PER_MINUTE, SHEETSERVE_GOOGLE_USER_WRITES_PER_MINUTE
@@ -65,7 +69,7 @@ func perMinute(name string, def int) (int, error) {
 	return n, nil
 }
 
-// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS, SHEETSERVE_AUTH_RELAY, SHEETSERVE_RELAY_ORIGINS and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
+// FromEnv reads the server-wide settings: SHEETSERVE_BASE_URL, SHEETSERVE_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PICKER_API_KEY, GOOGLE_PROJECT_NUMBER, PORT, SHEETSERVE_CACHE_TTL, SHEETSERVE_CORS_ORIGINS, SHEETSERVE_AUTH_RELAY, SHEETSERVE_RELAY_ORIGINS, SHEETSERVE_OPERATOR, SHEETSERVE_CONTACT and the SHEETSERVE_GOOGLE_*_PER_MINUTE quotas.
 func FromEnv() (*Config, error) {
 	c := Config{
 		BaseURL:             cmp.Or(os.Getenv("SHEETSERVE_BASE_URL"), os.Getenv("RENDER_EXTERNAL_URL"), "http://localhost:8085"),
@@ -86,6 +90,7 @@ func FromEnv() (*Config, error) {
 	}
 	c.Port = p
 	c.DatabaseURL = cmp.Or(os.Getenv("SHEETSERVE_DB"), "sheetserve.db")
+	c.OperatorName, c.OperatorContact = os.Getenv("SHEETSERVE_OPERATOR"), os.Getenv("SHEETSERVE_CONTACT")
 
 	if ttl := os.Getenv("SHEETSERVE_CACHE_TTL"); ttl != "" {
 		d, err := time.ParseDuration(ttl)
