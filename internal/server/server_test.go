@@ -100,6 +100,7 @@ func TestRouteTable(t *testing.T) {
 		"GET /",
 		"GET /app/token",
 		"GET /auth/callback",
+		"GET /favicon.ico",
 		"GET /keys",
 		"GET /login",
 		"GET /openapi.json",

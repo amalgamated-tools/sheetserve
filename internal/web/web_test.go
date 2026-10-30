@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
@@ -206,10 +207,10 @@ func TestDashboardAndAPI(t *testing.T) {
 	if s, body := get(t, alice, srv.URL+"/sheets", ""); s != 200 || !strings.Contains(body, `<a href="https://docs.google.com/spreadsheets/d/SS/edit" target="_blank" rel="noopener"`) {
 		t.Errorf("dashboard has no link to the spreadsheet: %d", s)
 	}
-	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 {
+	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops:Orders": {"read"}}); s != 303 {
 		t.Fatalf("save tab: %d %s", s, body)
 	}
-	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"bogus"}}); s != 400 || !strings.Contains(body, "unknown op") {
+	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops:Orders": {"bogus"}}); s != 400 || !strings.Contains(body, "unknown op") {
 		t.Errorf("bad op accepted: %d", s)
 	}
 	s, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/*"}})
@@ -311,7 +312,7 @@ func TestDashboardPages(t *testing.T) {
 	if s, loc := location("POST", "/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}}); s != 303 || loc != "/sheets/columns?sheet=shop" {
 		t.Errorf("add sheet: %d %q", s, loc)
 	}
-	if s, loc := location("POST", "/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read"}}); s != 303 || loc != "/sheets#sheet-shop" {
+	if s, loc := location("POST", "/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops:Orders": {"read"}}); s != 303 || loc != "/sheets#sheet-shop" {
 		t.Errorf("save tab: %d %q", s, loc)
 	}
 	s, body = get(t, alice, srv.URL+"/sheets", "")
@@ -380,7 +381,7 @@ func TestCreateSheet(t *testing.T) {
 	if _, body := get(t, alice, srv.URL+"/sheets", ""); !strings.Contains(body, "key <code>id</code> · 3 typed") || !strings.Contains(body, "key <code>sku</code> · 1 typed") {
 		t.Errorf("tab summaries: %s", body)
 	}
-	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}); s != 303 {
+	if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops:Orders": {"read", "create"}}); s != 303 {
 		t.Fatalf("save tab: %d %s", s, body)
 	}
 	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}})
@@ -512,7 +513,7 @@ func TestColumns(t *testing.T) {
 		t.Errorf("columns page after save: %s", body)
 	}
 
-	post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"crm"}, "tab": {"People"}, "ops": {"read", "create", "update"}})
+	post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"crm"}, "tab": {"People"}, "ops:People": {"read", "create", "update"}})
 	_, body = post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"crm/People"}})
 	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
 	if s, body := get(t, browser(t), srv.URL+"/v1/crm/People/ann@example.com", key); s != 200 ||
@@ -762,7 +763,7 @@ func TestAuditLog(t *testing.T) {
 		form url.Values
 	}{
 		{"/app/sheets/new", url.Values{"name": {"shop"}, "t0": {"Orders"}, "t0c0": {"item"}}},
-		{"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops": {"read", "create"}}},
+		{"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops:Orders": {"read", "create"}}},
 		{"/app/sheets/columns", url.Values{"sheet": {"shop"}, "t0": {"Orders"}, "t0key": {"id"},
 			"t0c0": {"id"}, "t0c0type": {"string"}, "t0c1": {"item"}, "t0c1type": {"string"}, "t0c1required": {"1"}, "t0c1hidden": {"1"}}},
 		{"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/Orders"}, "ops": {"read"}}},
@@ -803,44 +804,77 @@ func TestAuditLog(t *testing.T) {
 	}
 }
 
-func TestPresetValue(t *testing.T) {
-	for ops, want := range map[string]string{
-		"":                          "",
-		"read":                      "read",
-		"update,read,create":        "read,create,update",
-		"delete,update,create,read": "read,create,update,delete",
-		"read,delete":               "custom",
-		"create":                    "custom",
+
+// One form per spreadsheet saves every tab's ops at once.
+func TestSaveAllOps(t *testing.T) {
+	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{}})
+	alice := signInAs(t, dash, srv, "alice")
+	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "t0": {"Orders"}, "t0c0": {"item"}, "t1": {"Notes"}, "t1c0": {"text"}}); s != 303 {
+		t.Fatalf("create sheet: %d %s", s, body)
+	}
+	_, body := get(t, alice, srv.URL+"/sheets", "")
+	if strings.Count(body, `action="/app/tabs"`) != 1 || !strings.Contains(body, `form="ops-shop" name="ops:Notes" value="delete"`) ||
+		strings.Contains(body, "ops-preset") {
+		t.Errorf("sheets page should have one ops form for shop: %s", body)
+	}
+	form := url.Values{"sheet": {"shop"}, "tab": {"Orders", "Notes"}, "ops:Orders": {"read", "create"}, "ops:Notes": {"read"}}
+	if s, body := post(t, alice, srv.URL+"/app/tabs", form); s != 303 {
+		t.Fatalf("save ops: %d %s", s, body)
+	}
+	settings, err := dash.DB.UserSettings(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tabs := settings.Spreadsheets["shop"].Tabs; !slices.Equal(tabs["Orders"].Ops, []string{"read", "create"}) || !slices.Equal(tabs["Notes"].Ops, []string{"read"}) {
+		t.Errorf("saved ops: %+v", tabs)
+	}
+}
+
+// The keys page says when each key was made and last used, and how much Google quota it has left.
+func TestKeyDetails(t *testing.T) {
+	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id", "item"}}}})
+	dash.Limiter = store.NewLimiter(store.Quota{}, store.Quota{}, store.Quota{ReadsPerMinute: 30, WritesPerMinute: 30})
+	alice := signInAs(t, dash, srv, "alice")
+	post(t, alice, srv.URL+"/app/sheets", url.Values{"name": {"shop"}, "google_id": {"SS"}, "title": {"Shop"}})
+	post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {"Orders"}, "ops:Orders": {"read"}})
+	_, body := post(t, alice, srv.URL+"/app/keys", url.Values{"name": {"web"}, "tabs": {"shop/*"}})
+	key := regexp.MustCompile(`sk_[A-Z0-9]+`).FindString(body)
+	today := time.Now().Format("Jan 2, 2006")
+	if !strings.Contains(body, "created "+today+"</div></td>") || !strings.Contains(body, ">never</td>") || !strings.Contains(body, "27/27 reads · 27/27 writes") {
+		t.Errorf("new key's details: %s", body)
+	}
+	if s, _ := get(t, browser(t), srv.URL+"/v1/shop/Orders", key); s != 200 {
+		t.Fatalf("API call: %d", s)
+	}
+	if _, body := get(t, alice, srv.URL+"/keys", ""); !strings.Contains(body, "just now") {
+		t.Errorf("last used after a call: %s", body)
+	}
+}
+
+func TestAgo(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	for d, want := range map[time.Duration]string{
+		10 * time.Second: "just now", 5 * time.Minute: "5 min ago", 3 * time.Hour: "3 h ago", 50 * time.Hour: "Oct 28, 2026",
 	} {
-		var in []string
-		if ops != "" {
-			in = strings.Split(ops, ",")
-		}
-		if got := presetValue(in); got != want {
-			t.Errorf("presetValue(%q) = %q, want %q", ops, got, want)
+		if got := ago(now.Add(-d), now); got != want {
+			t.Errorf("ago(%v) = %q, want %q", d, got, want)
 		}
 	}
 }
 
-// Each tab row's preset menu opens on the preset its saved ops match, or on Custom.
-func TestOpsPresetMenu(t *testing.T) {
-	dash, srv := newTestDashboard(t, &fakeStore{tabs: map[string][][]any{}})
-	alice := signInAs(t, dash, srv, "alice")
-	if s, body := post(t, alice, srv.URL+"/app/sheets/new", url.Values{"name": {"shop"}, "t0": {"Orders"}, "t0c0": {"item"}, "t1": {"Notes"}, "t1c0": {"text"}, "t2": {"People"}, "t2c0": {"name"}}); s != 303 {
-		t.Fatalf("create sheet: %d %s", s, body)
+// /favicon.ico points at the icon, so browsers that ask for it don't get 404.
+func TestFavicon(t *testing.T) {
+	_, srv := newTestDashboard(t, &fakeStore{})
+	c := browser(t)
+	resp, err := c.Get(srv.URL + "/favicon.ico")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for tab, ops := range map[string][]string{"Orders": db.AllOps, "Notes": {"read", "delete"}} {
-		if s, body := post(t, alice, srv.URL+"/app/tabs", url.Values{"sheet": {"shop"}, "tab": {tab}, "ops": ops}); s != 303 {
-			t.Fatalf("save %s: %d %s", tab, s, body)
-		}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 301 || resp.Header.Get("Location") != "/static/favicon.svg" {
+		t.Errorf("favicon: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	_, body := get(t, alice, srv.URL+"/sheets", "")
-	selected := regexp.MustCompile(`aria-label="Ops preset for (\w+)">.*?<option value="([^"]*)"[^>]* selected>`)
-	got := map[string]string{}
-	for _, m := range selected.FindAllStringSubmatch(body, -1) {
-		got[m[1]] = m[2]
-	}
-	if want := map[string]string{"Orders": "read,create,update,delete", "Notes": "custom", "People": ""}; !maps.Equal(got, want) {
-		t.Errorf("selected presets: %v, want %v", got, want)
+	if s, body := get(t, c, srv.URL+"/static/favicon.svg", ""); s != 200 || !strings.Contains(body, "<svg") {
+		t.Errorf("favicon.svg: %d", s)
 	}
 }

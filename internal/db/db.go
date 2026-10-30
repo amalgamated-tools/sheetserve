@@ -216,6 +216,21 @@ func (d *DB) KeyUser(ctx context.Context, hash string) (id int64, role rbac.Role
 	return id, role, err == nil, err
 }
 
+// TouchKey records that the key with hash was just used. It writes at most once a minute per key.
+func (d *DB) TouchKey(ctx context.Context, hash string) error {
+	now := time.Now().Unix()
+	_, err := d.ExecContext(ctx, `UPDATE api_keys SET last_used_at = ? WHERE hash = ? AND coalesce(last_used_at, 0) <= ?`,
+		now, hash, now-60)
+	return err
+}
+
+func unixTime(n sql.NullInt64) time.Time {
+	if !n.Valid {
+		return time.Time{}
+	}
+	return time.Unix(n.Int64, 0)
+}
+
 // Spreadsheet is a spreadsheet a user added, with its tabs in the order Google listed them.
 type Spreadsheet struct {
 	Name, Title string
@@ -305,12 +320,17 @@ func (d *DB) DeleteSpreadsheet(ctx context.Context, userID int64, name string) e
 	})
 }
 
-// SaveOps sets the ops one of userID's tabs allows.
-func (d *DB) SaveOps(ctx context.Context, userID int64, sheet, tab string, ops []string) error {
+// SaveOps sets the ops userID's tabs in sheet allow, by tab name, all or none of them.
+func (d *DB) SaveOps(ctx context.Context, userID int64, sheet string, ops map[string][]string) error {
 	return d.update(ctx, userID, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE tabs SET ops = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
-			jsonList(ops), userID, sheet, tab)
-		return mustAffect(res, err, "unknown tab")
+		for tab, o := range ops {
+			res, err := tx.ExecContext(ctx, `UPDATE tabs SET ops = ? WHERE user_id = ? AND sheet = ? AND tab = ?`,
+				jsonList(o), userID, sheet, tab)
+			if err := mustAffect(res, err, "unknown tab"); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -365,8 +385,8 @@ func mustAffect(res sql.Result, err error, msg string) error {
 // CreateKey stores k (its hash, never the key itself) for userID.
 func (d *DB) CreateKey(ctx context.Context, userID int64, k Key) error {
 	return d.update(ctx, userID, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO api_keys (hash, user_id, name, tabs, ops) VALUES (?, ?, ?, ?, ?)`,
-			k.Hash, userID, k.Name, jsonList(k.Tabs), jsonList(k.Ops))
+		_, err := tx.ExecContext(ctx, `INSERT INTO api_keys (hash, user_id, name, tabs, ops, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			k.Hash, userID, k.Name, jsonList(k.Tabs), jsonList(k.Ops), time.Now().Unix())
 		return err
 	})
 }
@@ -431,12 +451,14 @@ func userSettings(ctx context.Context, q querier, userID int64) (*Settings, erro
 		})
 	}
 	if err == nil {
-		err = scan(ctx, q, `SELECT hash, name, tabs, ops FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
+		err = scan(ctx, q, `SELECT hash, name, tabs, ops, created_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY name`, userID, func(rows *sql.Rows) error {
 			var k Key
 			var tabs, ops string
-			if err := rows.Scan(&k.Hash, &k.Name, &tabs, &ops); err != nil {
+			var created, used sql.NullInt64
+			if err := rows.Scan(&k.Hash, &k.Name, &tabs, &ops, &created, &used); err != nil {
 				return err
 			}
+			k.Created, k.LastUsed = unixTime(created), unixTime(used)
 			if err := errors.Join(json.Unmarshal([]byte(tabs), &k.Tabs), json.Unmarshal([]byte(ops), &k.Ops)); err != nil {
 				return err
 			}

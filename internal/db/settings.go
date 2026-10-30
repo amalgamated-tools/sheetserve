@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 var AllOps = []string{"read", "create", "update", "delete"}
@@ -51,6 +52,8 @@ type Key struct {
 	Hash string
 	Tabs []string // "*", "sheet/*" or "sheet/tab"
 	Ops  []string // optional; narrows the tab's ops
+	// When it was made and last used, to the minute; zero when unknown or never.
+	Created, LastUsed time.Time
 }
 
 // ValidationError is a change the settings reject; its message is meant for the user.

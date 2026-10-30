@@ -70,7 +70,6 @@ fieldset { border: 0; padding: 0; margin: .75rem 0; }
 legend { font-weight: 600; font-size: .9rem; padding: 0; margin-bottom: .35rem; }
 
 .chips { display: flex; flex-wrap: wrap; gap: .35rem; }
-.ops { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; }
 .chip { display: inline-flex; align-items: center; gap: .3rem; border: 1px solid var(--border); border-radius: 999px; padding: .15rem .65rem; background: var(--bg); font-size: .9rem; cursor: pointer; user-select: none; }
 .chip input { margin: 0; accent-color: var(--accent); }
 .chip:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
@@ -108,3 +107,4 @@ table.builder td input:not([type=checkbox], [type=radio]), table.builder select 
 .enum-options { display: block; width: 100%; margin-top: .35rem; }
 .enum-options[hidden] { display: none; }
 table.columns td input:not([type=checkbox], [type=radio]), table.columns select { width: 100%; min-width: 0; }
+.nowrap { white-space: nowrap; }
