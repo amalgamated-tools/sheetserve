@@ -55,6 +55,15 @@ func New(settings *db.Settings, store store.Store, cacheTTL time.Duration) *Serv
 // UseCache makes s read tabs through, and lock them in, c, as user.
 func (s *Service) UseCache(c *Cache, user int64) { s.cache, s.user = c, user }
 
+// Room returns how much Google quota the caller on ctx has left, or nil when its store has no
+// limits.
+func (s *Service) Room(ctx context.Context) []store.Room {
+	if r, ok := s.store.(store.Roomer); ok {
+		return r.Room(ctx)
+	}
+	return nil
+}
+
 func (s *Service) SharesCache(other *Service) bool { return s.cache == other.cache }
 
 func (s *Service) Tabs(ctx context.Context, spreadsheetID string) ([]string, error) {

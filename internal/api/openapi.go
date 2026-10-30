@@ -71,8 +71,8 @@ func (a *API) openAPI(ctx context.Context, key *db.Key) obj {
 					}
 				}
 				list := operation(name+"_list", "List rows in "+sheet+"/"+tab, params, nil, "200", obj{"type": "array", "items": ref})
-				list["responses"].(obj)["200"].(obj)["headers"] = obj{"X-Total-Count": obj{
-					"description": "how many rows match the filters, before limit and offset", "schema": obj{"type": "integer"}}}
+				list["responses"].(obj)["200"].(obj)["headers"].(obj)["X-Total-Count"] = obj{
+					"description": "how many rows match the filters, before limit and offset", "schema": obj{"type": "integer"}}
 				list["description"] = "Filter with col=value for an exact match, or col[op]=value where op is one of " +
 					strings.Join(service.FilterOperators(), ", ") + ". gt/gte/lt/lte compare numbers numerically, else as strings, with numbers before strings; contains ignores case."
 				coll["get"] = list
@@ -132,7 +132,10 @@ func operation(id, summary string, params []any, body obj, status string, result
 		"operationId": id,
 		"summary":     summary,
 		"responses": obj{
-			status: obj{"description": "ok", "content": obj{"application/json": obj{"schema": result}}},
+			status: obj{"description": "ok", "content": obj{"application/json": obj{"schema": result}}, "headers": obj{
+				"RateLimit-Policy": obj{"description": `the Google quota: "read" and "write" calls a minute, as q`, "schema": obj{"type": "string"}},
+				"RateLimit":        obj{"description": `the calls left over the next minute, as r, and seconds until it's back to q, as t`, "schema": obj{"type": "string"}},
+			}},
 			"4XX":  errResp,
 			"5XX":  errResp,
 		},

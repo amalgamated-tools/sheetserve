@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -110,7 +111,8 @@ func CORS(origins []string, next http.Handler) http.Handler {
 		}
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
-		h.Set("Access-Control-Expose-Headers", "X-Total-Count") // so browser apps can page through a list
+		// so browser apps can page through a list and see their quota
+		h.Set("Access-Control-Expose-Headers", "X-Total-Count, RateLimit, RateLimit-Policy")
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id")
@@ -132,13 +134,15 @@ func endpoint(op string, h handlerFunc) http.Handler {
 			if key == nil {
 				return 0, nil, &service.APIError{Status: http.StatusUnauthorized, Msg: "missing or invalid API key"}
 			}
+			r = r.WithContext(store.WithCaller(r.Context(), key.Hash))
+			defer func() { setRoom(w, a.svc.Room(r.Context())) }() // after h's own Google calls
 			if _, ok := a.settings.Rule(sheet, tab); !ok {
 				return 0, nil, &service.APIError{Status: http.StatusNotFound, Msg: "unknown tab"}
 			}
 			if !a.settings.Can(key, sheet, tab, op) {
 				return 0, nil, &service.APIError{Status: http.StatusForbidden, Msg: op + " not allowed on " + sheet + "/" + tab}
 			}
-			return h(a, r.WithContext(store.WithCaller(r.Context(), key.Hash)), sheet, tab)
+			return h(a, r, sheet, tab)
 		}()
 		reason := ""
 		if err != nil {
@@ -257,6 +261,21 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		slog.Error("write response", "err", err)
+	}
+}
+
+// setRoom sends the caller's Google quota as RateLimit-Policy and RateLimit headers, as the IETF
+// draft has them: one "read" and one "write" item, each with q calls in a window of w seconds,
+// r of them left, and t seconds until it's back to q.
+func setRoom(w http.ResponseWriter, rooms []store.Room) {
+	var policy, room []string
+	for _, rm := range rooms {
+		policy = append(policy, fmt.Sprintf("%q;q=%d;w=60", rm.Kind, rm.Limit))
+		room = append(room, fmt.Sprintf("%q;r=%d;t=%d", rm.Kind, rm.Remaining, int(rm.Reset.Seconds())))
+	}
+	if len(rooms) > 0 {
+		w.Header().Set("RateLimit-Policy", strings.Join(policy, ", "))
+		w.Header().Set("RateLimit", strings.Join(room, ", "))
 	}
 }
 

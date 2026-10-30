@@ -407,7 +407,7 @@ func TestCORS(t *testing.T) {
 		t.Errorf("preflight: %d %v", rec.Code, rec.Header())
 	}
 	if rec := req("GET", "https://app.example"); rec.Code != 401 || rec.Header().Get("Access-Control-Allow-Origin") == "" ||
-		rec.Header().Get("Access-Control-Expose-Headers") != "X-Total-Count" {
+		rec.Header().Get("Access-Control-Expose-Headers") != "X-Total-Count, RateLimit, RateLimit-Policy" {
 		t.Errorf("actual request should carry CORS headers: %d %v", rec.Code, rec.Header())
 	}
 	if rec := req("OPTIONS", "https://evil.example"); rec.Code == 204 || rec.Header().Get("Access-Control-Allow-Origin") != "" ||
@@ -715,7 +715,7 @@ func TestTotalCount(t *testing.T) {
 			t.Errorf("%s: total %q, %d rows (%v), want %s and %d", path, rec.Header().Get("X-Total-Count"), len(rows), err, want.total, want.rows)
 		}
 	}
-	if _, spec := call(t, h, "GET", "/openapi.json", "admin-key", ""); !strings.Contains(spec, `"headers":{"X-Total-Count":`) {
+	if _, spec := call(t, h, "GET", "/openapi.json", "admin-key", ""); !strings.Contains(spec, `"X-Total-Count":{"description"`) {
 		t.Errorf("spec has no X-Total-Count: %s", spec)
 	}
 }
@@ -743,5 +743,62 @@ func TestRateLimited(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 429 || rec.Header().Get("Retry-After") != "3" || !strings.Contains(rec.Body.String(), "quota reached; retry in 3s") {
 		t.Errorf("got %d, Retry-After %q: %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+}
+
+// googleStore is a fakeStore that store.Limit accepts. Only reads are called.
+type googleStore struct {
+	store.Google
+	fake *fakeStore
+}
+
+func (g googleStore) Read(ctx context.Context, id, tab string) ([][]any, error) { return g.fake.Read(ctx, id, tab) }
+
+// Each response tells the caller how much Google quota its key has left.
+func TestRateLimitHeaders(t *testing.T) {
+	cfg := &db.Settings{
+		Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{"Orders": {Ops: []string{"read"}}}}},
+		Keys:         []db.Key{{Name: "admin", Hash: db.HashKey("admin-key"), Tabs: []string{"*"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	g := googleStore{fake: &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id"}}}}}
+	l := store.NewLimiter(store.Quota{}, store.Quota{}, store.Quota{ReadsPerMinute: 30, WritesPerMinute: 30})
+	h := New(cfg, service.New(cfg, store.Limit(g, l, 1), 0)).Mux()
+	request := func(method, path, key string) (int, http.Header) {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Header()
+	}
+	_, hdr := request("GET", "/v1/shop/Orders", "admin-key")
+	if p := hdr.Get("RateLimit-Policy"); p != `"read";q=27;w=60, "write";q=27;w=60` {
+		t.Errorf("RateLimit-Policy %q", p)
+	}
+	if r := hdr.Get("RateLimit"); r != `"read";r=26;t=3, "write";r=27;t=0` {
+		t.Errorf("RateLimit %q", r)
+	}
+	for _, tc := range []struct {
+		name, method, path string
+		status             int
+	}{
+		{"unknown tab", "GET", "/v1/shop/Nope", http.StatusNotFound},
+		{"disallowed operation", "POST", "/v1/shop/Orders", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, hdr := request(tc.method, tc.path, "admin-key")
+			if status != tc.status {
+				t.Errorf("status %d, want %d", status, tc.status)
+			}
+			if hdr.Get("RateLimit-Policy") == "" || hdr.Get("RateLimit") == "" {
+				t.Errorf("authenticated refusal is missing quota headers: %v", hdr)
+			}
+		})
+	}
+	if status, hdr := request("GET", "/v1/shop/Orders", "bad-key"); status != http.StatusUnauthorized ||
+		hdr.Get("RateLimit-Policy") != "" || hdr.Get("RateLimit") != "" {
+		t.Errorf("invalid key response got status %d and quota headers: %v", status, hdr)
 	}
 }
