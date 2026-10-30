@@ -134,14 +134,14 @@ func endpoint(op string, h handlerFunc) http.Handler {
 			if key == nil {
 				return 0, nil, &service.APIError{Status: http.StatusUnauthorized, Msg: "missing or invalid API key"}
 			}
+			r = r.WithContext(store.WithCaller(r.Context(), key.Hash))
+			defer func() { setRoom(w, a.svc.Room(r.Context())) }() // after h's own Google calls
 			if _, ok := a.settings.Rule(sheet, tab); !ok {
 				return 0, nil, &service.APIError{Status: http.StatusNotFound, Msg: "unknown tab"}
 			}
 			if !a.settings.Can(key, sheet, tab, op) {
 				return 0, nil, &service.APIError{Status: http.StatusForbidden, Msg: op + " not allowed on " + sheet + "/" + tab}
 			}
-			r = r.WithContext(store.WithCaller(r.Context(), key.Hash))
-			defer func() { setRoom(w, a.svc.Room(r.Context())) }() // after h's own Google calls
 			return h(a, r, sheet, tab)
 		}()
 		reason := ""

@@ -766,21 +766,39 @@ func TestRateLimitHeaders(t *testing.T) {
 	g := googleStore{fake: &fakeStore{tabs: map[string][][]any{"SS/Orders": {{"id"}}}}}
 	l := store.NewLimiter(store.Quota{}, store.Quota{}, store.Quota{ReadsPerMinute: 30, WritesPerMinute: 30})
 	h := New(cfg, service.New(cfg, store.Limit(g, l, 1), 0)).Mux()
-	get := func(key string) http.Header {
-		req := httptest.NewRequest("GET", "/v1/shop/Orders", nil)
+	request := func(method, path, key string) (int, http.Header) {
+		req := httptest.NewRequest(method, path, nil)
 		req.Header.Set("Authorization", "Bearer "+key)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		return rec.Header()
+		return rec.Code, rec.Header()
 	}
-	hdr := get("admin-key")
+	_, hdr := request("GET", "/v1/shop/Orders", "admin-key")
 	if p := hdr.Get("RateLimit-Policy"); p != `"read";q=27;w=60, "write";q=27;w=60` {
 		t.Errorf("RateLimit-Policy %q", p)
 	}
 	if r := hdr.Get("RateLimit"); r != `"read";r=26;t=3, "write";r=27;t=0` {
 		t.Errorf("RateLimit %q", r)
 	}
-	if hdr := get("bad-key"); hdr.Get("RateLimit") != "" {
-		t.Errorf("an unknown key got quota headers: %q", hdr.Get("RateLimit"))
+	for _, tc := range []struct {
+		name, method, path string
+		status             int
+	}{
+		{"unknown tab", "GET", "/v1/shop/Nope", http.StatusNotFound},
+		{"disallowed operation", "POST", "/v1/shop/Orders", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, hdr := request(tc.method, tc.path, "admin-key")
+			if status != tc.status {
+				t.Errorf("status %d, want %d", status, tc.status)
+			}
+			if hdr.Get("RateLimit-Policy") == "" || hdr.Get("RateLimit") == "" {
+				t.Errorf("authenticated refusal is missing quota headers: %v", hdr)
+			}
+		})
+	}
+	if status, hdr := request("GET", "/v1/shop/Orders", "bad-key"); status != http.StatusUnauthorized ||
+		hdr.Get("RateLimit-Policy") != "" || hdr.Get("RateLimit") != "" {
+		t.Errorf("invalid key response got status %d and quota headers: %v", status, hdr)
 	}
 }
