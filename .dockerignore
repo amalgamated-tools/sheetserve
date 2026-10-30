@@ -1,0 +1,7 @@
+# Only go.mod, go.sum, cmd and internal go into the image; keep secrets and local state out of the
+# build context too.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
