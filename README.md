@@ -221,7 +221,9 @@ Instead, previews sign in through the main server's relay:
    ```
 
 3. Leave `SHEETSERVE_BASE_URL` unset on Render, so that each preview uses its own `RENDER_EXTERNAL_URL`.
-4. Add `https://sheetserve-pr-*.onrender.com/*` to the Picker API key's website restrictions.
+4. Add each preview's URL, such as `https://sheetserve-pr-42.onrender.com/*`, to the Picker API key's website restrictions.
+   These restrictions allow a `*` only for a whole subdomain, so `sheetserve-pr-*` is not accepted.
+   `https://*.onrender.com/*` works, but it lets every site on onrender.com use the key.
 
 A server whose base URL is the relay's ignores `SHEETSERVE_AUTH_RELAY` and signs in directly.
 The relay sends Google's answer only to origins that match `SHEETSERVE_RELAY_ORIGINS`.

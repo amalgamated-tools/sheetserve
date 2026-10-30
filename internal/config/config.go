@@ -118,7 +118,9 @@ func FromEnv() (*Config, error) {
 		}
 	}
 	if c.AuthRelay = os.Getenv("SHEETSERVE_AUTH_RELAY"); c.AuthRelay != "" {
-		if u, err := url.Parse(c.AuthRelay); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		// Google rejects redirect URIs that carry a fragment, so catch one here rather than at sign-in.
+		if u, err := url.Parse(c.AuthRelay); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" ||
+			strings.Contains(c.AuthRelay, "#") {
 			return nil, fmt.Errorf("SHEETSERVE_AUTH_RELAY: want a URL such as https://sheets.example.com/auth/relay, got %q", c.AuthRelay)
 		}
 	}

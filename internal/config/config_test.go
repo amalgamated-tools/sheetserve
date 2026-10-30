@@ -119,8 +119,10 @@ func TestRelay(t *testing.T) {
 		}
 	}
 	t.Setenv("SHEETSERVE_RELAY_ORIGINS", "")
-	t.Setenv("SHEETSERVE_AUTH_RELAY", "/auth/relay")
-	if _, err := FromEnv(); err == nil {
-		t.Error("relative SHEETSERVE_AUTH_RELAY accepted")
+	for _, r := range []string{"/auth/relay", "https://sheets.example/auth/relay#preview", "https://sheets.example/auth/relay#"} {
+		t.Setenv("SHEETSERVE_AUTH_RELAY", r)
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("bad SHEETSERVE_AUTH_RELAY %q accepted", r)
+		}
 	}
 }
