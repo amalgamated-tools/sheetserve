@@ -18,7 +18,7 @@ The server keeps them in SQLite.
 
 ## Setup
 
-Google Cloud setup:
+Google Cloud setup, in short. [docs/self-hosting.md](docs/self-hosting.md) has each step in detail.
 
 1. Enable the Google Sheets API and the Google Picker API.
 2. Configure the OAuth consent screen with the scopes `openid`, `email` and `.../auth/drive.file`.
@@ -214,8 +214,17 @@ Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and 
 
 ## Deploy
 
-`docker build -t sheetserve .`, or use `render.yaml` on Render.
-After deploying on Render, fill in the `GOOGLE_*` and `SHEETSERVE_SECRET` variables. The database lives on the service's disk at `/var/data`.
+[docs/self-hosting.md](docs/self-hosting.md) walks through the Google Cloud project, the container, HTTPS, backups and upgrades.
+
+Images for `linux/amd64` and `linux/arm64` are at `ghcr.io/amalgamated-tools/sheetserve`: `main` for the newest commit, and
+`latest` and the version for each `v*` release tag. Mount a volume at `/data` for the database.
+
+```sh
+docker run -p 8085:8085 -v sheetserve-data:/data --env-file sheetserve.env ghcr.io/amalgamated-tools/sheetserve:latest
+```
+
+On Render, use `render.yaml`. After deploying, fill in the `GOOGLE_*` and `SHEETSERVE_SECRET` variables. The database lives on
+the service's disk at `/var/data`.
 
 ### Preview deploys
 
