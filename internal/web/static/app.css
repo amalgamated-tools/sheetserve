@@ -48,7 +48,7 @@ code { font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; background: va
 .flash { border-radius: var(--radius); padding: .75rem 1rem; margin: 1rem 0; border: 1px solid; }
 .flash.error { background: var(--danger-soft); border-color: var(--danger); }
 .flash.key { background: var(--accent-soft); border-color: var(--accent); }
-.flash.key .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .35rem 0; }
+.flash .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .35rem 0; }
 
 button, .button { font: inherit; cursor: pointer; border-radius: 7px; padding: .35rem .8rem; border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; display: inline-flex; align-items: center; gap: .4rem; }
 button:hover, .button:hover { border-color: var(--muted); }
@@ -108,3 +108,7 @@ table.builder td input:not([type=checkbox], [type=radio]), table.builder select 
 .enum-options { display: block; width: 100%; margin-top: .35rem; }
 .enum-options[hidden] { display: none; }
 table.columns td input:not([type=checkbox], [type=radio]), table.columns select { width: 100%; min-width: 0; }
+.doc { max-width: 720px; }
+.doc h2 { font-size: 1.1rem; margin-top: 1.5rem; }
+.legal { font-size: .85rem; color: var(--muted); text-align: center; margin: 1rem 0; }
+.legal a { color: var(--muted); }

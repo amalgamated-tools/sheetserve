@@ -123,3 +123,34 @@ func TestSignIn(t *testing.T) {
 		t.Errorf("current user after logout: %q", body)
 	}
 }
+
+// A refresh token Google refuses as expired or revoked is recorded, so the dashboard can say so.
+func TestTokenSourceLost(t *testing.T) {
+	d, err := db.Open(t.TempDir()+"/test.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error": "invalid_grant", "error_description": "Token has been expired or revoked."}`)
+	}))
+	defer google.Close()
+	g := New(d, &oauth2.Config{ClientID: "cid", Endpoint: oauth2.Endpoint{TokenURL: google.URL}})
+	ctx := context.Background()
+	id, err := d.UpsertUser(ctx, "1", "a@example.com", "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts, err := g.TokenSource(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Token(); err == nil {
+		t.Fatal("Google refused the token, but Token succeeded")
+	}
+	if lost, err := d.GoogleLost(ctx, id); err != nil || !lost {
+		t.Errorf("lost access not recorded: %v %v", lost, err)
+	}
+}

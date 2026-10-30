@@ -57,6 +57,7 @@ type shell struct {
 	Admin                 bool // the viewer may manage users
 	SheetCount, KeyCount  int
 	Error, NewKey         string
+	GoogleLost            bool // Google refused the viewer's sign-in; they must reconnect
 }
 
 type sheetView struct {
@@ -94,6 +95,13 @@ type Dashboard struct {
 	Tenants   *tenancy.Tenants
 	PickerKey string // browser API key for Google Picker
 	AppID     string // Cloud project number, so picked files are granted to this app
+	// Who runs this server, for its privacy policy and terms. Both are optional.
+	OperatorName, OperatorContact string
+	BaseURL                       string
+}
+
+func (d *Dashboard) operator() operator {
+	return operator{Name: d.OperatorName, Contact: d.OperatorContact, BaseURL: d.BaseURL}
 }
 
 // Routes adds the dashboard's pages and forms to r. It refuses cross-origin form posts.
@@ -113,6 +121,8 @@ func (d *Dashboard) routes(mux chi.Router) {
 		}
 		write(w, r, loginView(), http.StatusOK)
 	})
+	mux.Get("/privacy", func(w http.ResponseWriter, r *http.Request) { write(w, r, privacyView(d.operator()), http.StatusOK) })
+	mux.Get("/terms", func(w http.ResponseWriter, r *http.Request) { write(w, r, termsView(d.operator()), http.StatusOK) })
 	for _, path := range []string{sheetsPage, newSheetPage, keysPage} {
 		mux.Get(path, d.signedIn(rbac.EditOwn, func(w http.ResponseWriter, r *http.Request, u user) {
 			d.render(w, r, u, view{path: path}, http.StatusOK)
@@ -199,6 +209,9 @@ func googleDetail(err error) string {
 	if rl, ok := errors.AsType[*store.RateLimitError](err); ok {
 		return " (" + rl.Error() + ")"
 	}
+	if store.AccessLost(err) {
+		return " (Google access expired or was revoked; reconnect your Google account)"
+	}
 	return ""
 }
 
@@ -214,9 +227,14 @@ func (d *Dashboard) render(w http.ResponseWriter, r *http.Request, u user, v vie
 		http.Error(w, "could not load your settings", http.StatusInternalServerError)
 		return
 	}
+	// Read after the handler's own Google calls, so a page that just found the access lost says so.
+	lost, err := d.DB.GoogleLost(r.Context(), u.id)
+	if err != nil {
+		slog.Error("dashboard", "user", u.id, "err", err)
+	}
 	s := shell{
 		Section: sheetsPage, Email: u.email, Admin: u.role.Can(rbac.ManageUsers),
-		SheetCount: len(sheets), KeyCount: len(keys), Error: v.err, NewKey: v.newKey,
+		SheetCount: len(sheets), KeyCount: len(keys), Error: v.err, NewKey: v.newKey, GoogleLost: lost,
 	}
 	var page templ.Component
 	switch v.path {

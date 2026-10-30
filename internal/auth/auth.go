@@ -15,6 +15,7 @@ import (
 
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
+	"github.com/amalgamated-tools/sheetserve/internal/store"
 )
 
 // Google handles sign-in with Google, the session cookie, and each user's Google credentials.
@@ -40,12 +41,31 @@ func (g *Google) Routes(r chi.Router) {
 }
 
 // TokenSource returns userID's Google credentials, from the refresh token they signed in with.
+// When Google refuses the token as expired or revoked, it records that for the dashboard.
 func (g *Google) TokenSource(userID int64) (oauth2.TokenSource, error) {
 	rt, err := g.DB.RefreshToken(context.Background(), userID)
 	if err != nil {
 		return nil, err
 	}
-	return g.OAuth.TokenSource(context.Background(), &oauth2.Token{RefreshToken: rt}), nil
+	return watched{g.OAuth.TokenSource(context.Background(), &oauth2.Token{RefreshToken: rt}), func() {
+		if err := g.DB.LoseGoogle(context.Background(), userID); err != nil {
+			slog.Error("record lost google access", slog.Int64(otelkeys.UserID, userID), slog.Any(otelkeys.Error, err))
+		}
+	}}, nil
+}
+
+// watched is a TokenSource that calls lost when Google refuses its refresh token.
+type watched struct {
+	oauth2.TokenSource
+	lost func()
+}
+
+func (w watched) Token() (*oauth2.Token, error) {
+	tok, err := w.TokenSource.Token()
+	if store.AccessLost(err) {
+		w.lost()
+	}
+	return tok, err
 }
 
 func (g *Google) cookie(name, value string, maxAge int) *http.Cookie {

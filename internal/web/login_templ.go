@@ -54,6 +54,10 @@ func loginView() templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
+				templ_7745c5c3_Err = legalLinks().Render(ctx, templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
 				return nil
 			})
 			templ_7745c5c3_Err = card().Render(templ.WithChildren(ctx, templ_7745c5c3_Var3), templ_7745c5c3_Buffer)
@@ -119,13 +123,17 @@ func pendingView(email string) templ.Component {
 				var templ_7745c5c3_Var7 string
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(email)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 23, Col: 47}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 24, Col: 47}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, ". An admin of this server needs to approve you before you can add spreadsheets or make keys.</p><form method=\"post\" action=\"/logout\"><button>Sign out</button></form>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = legalLinks().Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

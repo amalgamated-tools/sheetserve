@@ -136,8 +136,8 @@ func operation(id, summary string, params []any, body obj, status string, result
 				"RateLimit-Policy": obj{"description": `the Google quota: "read" and "write" calls a minute, as q`, "schema": obj{"type": "string"}},
 				"RateLimit":        obj{"description": `the calls left over the next minute, as r, and seconds until it's back to q, as t`, "schema": obj{"type": "string"}},
 			}},
-			"4XX":  errResp,
-			"5XX":  errResp,
+			"4XX": errResp,
+			"5XX": errResp,
 		},
 	}
 	if len(params) > 0 {

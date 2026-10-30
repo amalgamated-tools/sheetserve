@@ -91,7 +91,8 @@ type User struct {
 	Role  rbac.Role
 }
 
-// UpsertUser records a Google sign-in. An empty refreshToken keeps the stored one. The server's
+// UpsertUser records a Google sign-in. An empty refreshToken keeps the stored one; a new one
+// clears any lost access (see GoogleLost). The server's
 // first user becomes admin; later ones wait as pending until an admin approves them.
 func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (int64, error) {
 	var sealed []byte
@@ -102,7 +103,8 @@ func (d *DB) UpsertUser(ctx context.Context, sub, email, refreshToken string) (i
 	err := d.QueryRowContext(ctx, `INSERT INTO users (google_sub, email, refresh_token, role)
 		VALUES (?, ?, ?, CASE WHEN EXISTS (SELECT 1 FROM users) THEN ? ELSE ? END)
 		ON CONFLICT (google_sub) DO UPDATE SET email = excluded.email,
-			refresh_token = coalesce(excluded.refresh_token, users.refresh_token)
+			refresh_token = coalesce(excluded.refresh_token, users.refresh_token),
+			google_lost_at = CASE WHEN excluded.refresh_token IS NULL THEN users.google_lost_at END
 		RETURNING id`, sub, email, sealed, rbac.Pending, rbac.Admin).Scan(&id)
 	return id, err
 }
@@ -175,6 +177,20 @@ func (d *DB) RefreshToken(ctx context.Context, userID int64) (string, error) {
 		return "", errors.New("no refresh token; sign in again")
 	}
 	return d.decrypt(sealed)
+}
+
+// LoseGoogle records that Google refused userID's refresh token, unless it already has.
+func (d *DB) LoseGoogle(ctx context.Context, userID int64) error {
+	_, err := d.ExecContext(ctx, `UPDATE users SET google_lost_at = coalesce(google_lost_at, ?) WHERE id = ?`,
+		time.Now().Unix(), userID)
+	return err
+}
+
+// GoogleLost reports whether Google refused userID's refresh token since they last signed in.
+func (d *DB) GoogleLost(ctx context.Context, userID int64) (bool, error) {
+	var lost bool
+	err := d.QueryRowContext(ctx, `SELECT google_lost_at IS NOT NULL FROM users WHERE id = ?`, userID).Scan(&lost)
+	return lost, err
 }
 
 const SessionTTL = 30 * 24 * time.Hour

@@ -167,7 +167,7 @@ func endpoint(op string, h handlerFunc) http.Handler {
 
 // errorResponse hides upstream (Google) error details from callers; they are only logged.
 // Running out of Google quota, whether the server's limiter or Google says so, is 429 so clients
-// know to back off.
+// know to back off. Google refusing the owner's sign-in is 503 until they reconnect.
 func errorResponse(err error) (status int, body any, reason string) {
 	var ae *service.APIError
 	if errors.As(err, &ae) {
@@ -175,6 +175,9 @@ func errorResponse(err error) (status int, body any, reason string) {
 	}
 	if rl, ok := errors.AsType[*store.RateLimitError](err); ok {
 		return http.StatusTooManyRequests, map[string]string{"error": rl.Error()}, rl.Error()
+	}
+	if store.AccessLost(err) {
+		return http.StatusServiceUnavailable, map[string]string{"error": "the key's owner must reconnect their Google account in the sheetserve dashboard"}, err.Error()
 	}
 	if gerr, ok := errors.AsType[*googleapi.Error](err); ok && gerr.Code == http.StatusTooManyRequests {
 		return http.StatusTooManyRequests, map[string]string{"error": "Google Sheets rate limit reached; retry in a minute"}, err.Error()
