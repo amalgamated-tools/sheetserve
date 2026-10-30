@@ -178,7 +178,7 @@ func (l *Limiter) Room(ctx context.Context, user int64) []Room {
 				continue
 			}
 			perSecond, burst, tokens := float64(lim.Limit()), float64(lim.Burst()), lim.TokensAt(now)
-			limit := int(math.Round(burst + perSecond*60)) // 90% of the quota; see bucket
+			limit := int(math.Floor(burst + perSecond*60)) // 90% of the quota; see bucket
 			r := Room{Kind: kind, Limit: limit,
 				Remaining: min(limit, max(0, int(math.Floor(tokens+perSecond*60)))),
 				Reset:     time.Duration(math.Ceil(max(0, burst-tokens)/perSecond)) * time.Second}
