@@ -79,6 +79,21 @@ func TestFromEnv(t *testing.T) {
 	}
 }
 
+// Sign-up needs approval unless SHEETSERVE_SIGNUP is open.
+func TestSignup(t *testing.T) {
+	setRequired(t)
+	for v, open := range map[string]bool{"": false, "approval": false, "open": true} {
+		t.Setenv("SHEETSERVE_SIGNUP", v)
+		if c, err := FromEnv(); err != nil || c.OpenSignup != open {
+			t.Errorf("SHEETSERVE_SIGNUP=%q: %v %v", v, c, err)
+		}
+	}
+	t.Setenv("SHEETSERVE_SIGNUP", "anyone")
+	if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "SHEETSERVE_SIGNUP") {
+		t.Errorf("bad SHEETSERVE_SIGNUP: %v", err)
+	}
+}
+
 // On Render, the base URL defaults to the service's public URL.
 func TestBaseURLFromRender(t *testing.T) {
 	setRequired(t)

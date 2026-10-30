@@ -40,6 +40,7 @@ Environment variables:
 | `SHEETSERVE_DB` | Optional. SQLite file path. Defaults to `sheetserve.db`. |
 | `SHEETSERVE_CACHE_TTL` | Optional. How long to cache reads, such as `60s`. Defaults to no cache. |
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
+| `SHEETSERVE_SIGNUP` | Optional. `approval`, the default, makes new users wait for an admin. `open` lets anyone who signs in use the server. See [Users](#users). |
 | `PORT` | Optional. Listen port. Defaults to `8085`. |
 | `OTEL_*` | Optional. The standard OpenTelemetry variables, such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. Traces, metrics and logs export over OTLP. Set `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` to `none` to turn one off. |
 | `SHEETSERVE_GOOGLE_READS_PER_MINUTE`, `SHEETSERVE_GOOGLE_WRITES_PER_MINUTE` | Optional. Your Cloud project's Google Sheets API quotas. Default `300` each. See [Google quotas](#google-quotas). |
@@ -108,7 +109,9 @@ A key acts through the Google account of the user who made it.
 
 ## Users
 
-The first person to sign in becomes the admin. Everyone after that waits as pending until an admin approves them on the Users page.
+The first person to sign in becomes the admin. By default everyone after that waits as pending until an admin approves them on
+the Users page. With `SHEETSERVE_SIGNUP=open`, such as for a hosted service anyone can use, new users are members as soon as
+they sign in, and an admin can still set someone to pending to suspend them.
 Pending users can't add spreadsheets or make keys, and their keys return `403`.
 
 | Role | Can |

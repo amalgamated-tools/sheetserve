@@ -24,6 +24,7 @@ import (
 	"github.com/amalgamated-tools/sheetserve/internal/db"
 	"github.com/amalgamated-tools/sheetserve/internal/otel"
 	"github.com/amalgamated-tools/sheetserve/internal/otelkeys"
+	"github.com/amalgamated-tools/sheetserve/internal/rbac"
 	smiddleware "github.com/amalgamated-tools/sheetserve/internal/server/middleware"
 	"github.com/amalgamated-tools/sheetserve/internal/store"
 	"github.com/amalgamated-tools/sheetserve/internal/tenancy"
@@ -89,6 +90,9 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 	}
 	s.Address = net.JoinHostPort("0.0.0.0", strconv.Itoa(s.port))
 
+	if s.cfg.OpenSignup {
+		s.db.NewUsers = rbac.Member
+	}
 	s.auth = auth.New(s.db, &oauth2.Config{
 		ClientID:     s.cfg.GoogleClientID,
 		ClientSecret: s.cfg.GoogleClientSecret,
@@ -100,7 +104,7 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 	s.tenants = &tenancy.Tenants{DB: s.db, Global: s.cfg, NewStore: s.newStore}
 	s.auth.OnSignIn = s.tenants.Invalidate // pick up the new refresh token
 	s.dash = &web.Dashboard{
-		DB: s.db, Auth: s.auth, Tenants: s.tenants,
+		DB: s.db, Auth: s.auth, Tenants: s.tenants, OpenSignup: s.cfg.OpenSignup,
 		PickerKey: s.cfg.GooglePickerAPIKey, AppID: s.cfg.GoogleProjectNumber,
 	}
 	s.setupRoutes(ctx)
