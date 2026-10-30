@@ -40,6 +40,7 @@ Environment variables:
 | `SHEETSERVE_DB` | Optional. SQLite file path. Defaults to `sheetserve.db`. |
 | `SHEETSERVE_CACHE_TTL` | Optional. How long to cache reads, such as `60s`. Defaults to no cache. |
 | `SHEETSERVE_CORS_ORIGINS` | Optional. Comma-separated browser origins allowed to call the API. See [Browsers](#browsers-cors). |
+| `SHEETSERVE_AUTH_RELAY`, `SHEETSERVE_RELAY_ORIGINS` | Optional. Sign-in for preview deploys. See [Preview deploys](#preview-deploys). |
 | `PORT` | Optional. Listen port. Defaults to `8085`. |
 | `OTEL_*` | Optional. The standard OpenTelemetry variables, such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. Traces, metrics and logs export over OTLP. Set `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` to `none` to turn one off. |
 | `SHEETSERVE_GOOGLE_READS_PER_MINUTE`, `SHEETSERVE_GOOGLE_WRITES_PER_MINUTE` | Optional. Your Cloud project's Google Sheets API quotas. Default `300` each. See [Google quotas](#google-quotas). |
@@ -204,6 +205,27 @@ Each tab gets the tools `<sheet>_<tab>_list`, `_get`, `_create`, `_update`, and 
 
 `docker build -t sheetserve .`, or use `render.yaml` on Render.
 After deploying on Render, fill in the `GOOGLE_*` and `SHEETSERVE_SECRET` variables. The database lives on the service's disk at `/var/data`.
+
+### Preview deploys
+
+Google accepts only redirect URIs that are registered in advance, with no wildcards.
+A preview deploy, such as `https://sheetserve-pr-42.onrender.com`, can't sign in with its own URL.
+Instead, previews sign in through the main server's relay:
+
+1. Add `<base URL>/auth/relay` to the OAuth client's redirect URIs, next to `<base URL>/auth/callback`.
+2. Set these on the main service. Render copies them to its previews.
+
+   ```sh
+   SHEETSERVE_AUTH_RELAY=https://sheetserve.onrender.com/auth/relay
+   SHEETSERVE_RELAY_ORIGINS=https://sheetserve-pr-*.onrender.com
+   ```
+
+3. Leave `SHEETSERVE_BASE_URL` unset on Render, so that each preview uses its own `RENDER_EXTERNAL_URL`.
+4. Add `https://sheetserve-pr-*.onrender.com/*` to the Picker API key's website restrictions.
+
+A server whose base URL is the relay's ignores `SHEETSERVE_AUTH_RELAY` and signs in directly.
+The relay sends Google's answer only to origins that match `SHEETSERVE_RELAY_ORIGINS`.
+A `*` matches any part of the host. The code it sends on is useless without the preview's PKCE verifier and the client secret.
 
 ## Development
 
