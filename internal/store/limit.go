@@ -204,6 +204,7 @@ type Google interface {
 	Creator
 	SerialReader
 	CellReader
+	HeaderReader
 }
 
 // Limit returns g with each call waiting its turn in l as user, and tried again after a short
@@ -250,6 +251,11 @@ func (s *limited) Room(ctx context.Context) []Room { return s.l.Room(ctx, s.user
 func (s *limited) Read(ctx context.Context, id, tab string) (vals [][]any, err error) {
 	err = s.call(ctx, "read", func() error { vals, err = s.g.Read(ctx, id, tab); return err })
 	return vals, err
+}
+
+func (s *limited) ReadHeader(ctx context.Context, id, tab string) (row []any, err error) {
+	err = s.call(ctx, "read", func() error { row, err = s.g.ReadHeader(ctx, id, tab); return err })
+	return row, err
 }
 
 func (s *limited) ReadSerial(ctx context.Context, id, tab string, cols []int) (vals [][]any, err error) {

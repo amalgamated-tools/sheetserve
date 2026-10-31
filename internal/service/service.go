@@ -86,11 +86,8 @@ func (s *Service) load(ctx context.Context, sheet, tab string, fresh bool) (snap
 			return snapshot{}, err
 		}
 	}
-	var snap snapshot
+	snap := snapshot{header: headerOf(t.vals)}
 	if len(t.vals) > 0 {
-		for _, h := range t.vals[0] {
-			snap.header = append(snap.header, fmt.Sprint(h))
-		}
 		snap.rows = t.vals[1:]
 	}
 	snap.key = slices.Index(snap.header, s.keyColumn(sheet, tab))
@@ -225,13 +222,57 @@ func (s *Service) Peek(ctx context.Context, sheet, tab string, n int) ([]string,
 	return snap.header, snap.rows[:min(n, len(snap.rows))], err
 }
 
-// Key returns the tab's key column, or "" when its header lacks one and the tab can only be listed.
-func (s *Service) Key(ctx context.Context, sheet, tab string) (string, error) {
-	snap, err := s.load(ctx, sheet, tab, false)
-	if err != nil || snap.key < 0 {
-		return "", err
+// headerOf returns the header row of a tab's values, as text.
+func headerOf(vals [][]any) []string {
+	if len(vals) == 0 {
+		return nil
 	}
-	return snap.header[snap.key], nil
+	header := make([]string, len(vals[0]))
+	for i, h := range vals[0] {
+		header[i] = fmt.Sprint(h)
+	}
+	return header
+}
+
+// header returns the tab's header row, from a cached read of the tab or of its header if this user
+// has one, or else read from Google on its own when the store can.
+func (s *Service) header(ctx context.Context, sheet, tab string) ([]string, error) {
+	id := s.settings.Spreadsheets[sheet].ID
+	k := cacheKey(id, tab)
+	if t, ok := s.cache.get(s.user, k); ok {
+		return headerOf(t.vals), nil
+	}
+	if h, ok := s.cache.header(s.user, k); ok {
+		return h, nil
+	}
+	hr, ok := s.store.(store.HeaderReader)
+	if !ok {
+		t, _, err := s.read(ctx, sheet, tab, false) // caches the header
+		if err != nil {
+			return nil, err
+		}
+		return headerOf(t.vals), nil
+	}
+	row, err := hr.ReadHeader(ctx, id, tab)
+	if err != nil {
+		return nil, err
+	}
+	h := headerOf([][]any{row})
+	s.cache.putHeader(s.user, k, h)
+	return h, nil
+}
+
+// Columns returns the columns of the tab a caller may see, in sheet order, and its key column, or
+// "" when its header lacks one and the tab can only be listed. It needs only the header row.
+func (s *Service) Columns(ctx context.Context, sheet, tab string) (visible []string, key string, err error) {
+	header, err := s.header(ctx, sheet, tab)
+	if err != nil {
+		return nil, "", err
+	}
+	if k := s.keyColumn(sheet, tab); slices.Contains(header, k) {
+		key = k
+	}
+	return s.visibleColumns(snapshot{header: header}, sheet, tab), key, nil
 }
 
 // visibleColumns returns header columns a caller may see, in sheet order.
@@ -240,14 +281,6 @@ func (s *Service) visibleColumns(snap snapshot, sheet, tab string) []string {
 	return slices.DeleteFunc(slices.Clone(snap.header), func(h string) bool {
 		return h == "" || slices.Contains(hidden, h)
 	})
-}
-
-func (s *Service) VisibleColumns(ctx context.Context, sheet, tab string) ([]string, error) {
-	snap, err := s.load(ctx, sheet, tab, false)
-	if err != nil {
-		return nil, err
-	}
-	return s.visibleColumns(snap, sheet, tab), nil
 }
 
 func (s *Service) columns(sheet, tab string) map[string]db.Column {

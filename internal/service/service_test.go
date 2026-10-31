@@ -343,3 +343,62 @@ func TestCacheSweep(t *testing.T) {
 		t.Errorf("after sweep: %v %v", c.tabs, c.verified)
 	}
 }
+
+// headerStore is a serialStore that can read just the header row.
+type headerStore struct {
+	*serialStore
+	headers int
+}
+
+func (f *headerStore) ReadHeader(context.Context, string, string) ([]any, error) {
+	f.headers++
+	return f.rows[0], nil
+}
+
+// Columns reads only the header row and keeps it for a minute even with caching off, per user, and
+// a store that can't read just the header reads the whole tab once.
+func TestColumnsHeaderCache(t *testing.T) {
+	cfg := &db.Settings{Spreadsheets: map[string]db.SheetRule{"shop": {ID: "SS", Tabs: map[string]db.TabRule{
+		"Tasks": {Ops: db.AllOps, Key: "sku", Hidden: []string{"cost"}},
+	}}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	st := &headerStore{serialStore: &serialStore{rows: [][]any{{"sku", "cost", "name"}, {"a", 1.0, "Apple"}}}}
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cache := NewCache(0)
+	cache.now = func() time.Time { return clock }
+	alice, bob := New(cfg, st, 0), New(cfg, st, 0)
+	alice.UseCache(cache, 1)
+	bob.UseCache(cache, 2)
+	ctx := context.Background()
+	columns := func(svc *Service) {
+		t.Helper()
+		visible, key, err := svc.Columns(ctx, "shop", "Tasks")
+		if err != nil || !slices.Equal(visible, []string{"sku", "name"}) || key != "sku" {
+			t.Fatalf("columns: %q %q %v", visible, key, err)
+		}
+	}
+
+	columns(alice)
+	columns(alice)
+	if st.headers != 1 || st.reads != 0 {
+		t.Errorf("alice twice: %d header reads, %d reads, want 1 and 0", st.headers, st.reads)
+	}
+	columns(bob) // Bob hasn't read it from Google himself
+	if st.headers != 2 {
+		t.Errorf("bob: %d header reads, want 2", st.headers)
+	}
+	clock = clock.Add(minHeaderTTL)
+	if columns(alice); st.headers != 3 {
+		t.Errorf("after a minute: %d header reads, want 3", st.headers)
+	}
+
+	plain := New(cfg, st.serialStore, 0)
+	plain.UseCache(cache, 3)
+	columns(plain)
+	columns(plain)
+	if st.reads != 1 {
+		t.Errorf("without ReadHeader: %d reads, want 1", st.reads)
+	}
+}

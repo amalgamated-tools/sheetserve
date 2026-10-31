@@ -36,6 +36,12 @@ type SerialReader interface {
 	ReadSerial(ctx context.Context, spreadsheetID, tab string, cols []int) ([][]any, error)
 }
 
+// HeaderReader reads just a tab's header row. A Store that can't doesn't implement it, and the
+// header comes from reading the whole tab.
+type HeaderReader interface {
+	ReadHeader(ctx context.Context, spreadsheetID, tab string) ([]any, error)
+}
+
 // Tab is a tab for a new spreadsheet, with the header row it starts with.
 type Tab struct {
 	Name    string
@@ -73,6 +79,19 @@ func (g *googleStore) Read(ctx context.Context, id, tab string) (_ [][]any, err 
 		return nil, err
 	}
 	return resp.Values, nil
+}
+
+// ReadHeader reads row 1 of a tab, as Read would show it.
+func (g *googleStore) ReadHeader(ctx context.Context, id, tab string) (_ []any, err error) {
+	defer logCall(ctx, "read_header", id, tab, time.Now(), &err)
+	resp, err := g.svc.Spreadsheets.Values.Get(id, quoteTab(tab)+"!1:1").
+		ValueRenderOption("UNFORMATTED_VALUE").
+		DateTimeRenderOption("FORMATTED_STRING").
+		Context(ctx).Do()
+	if err != nil || len(resp.Values) == 0 {
+		return nil, err
+	}
+	return resp.Values[0], nil
 }
 
 // ReadSerial reads columns cols of a tab with dates and times as serial numbers, which don't
