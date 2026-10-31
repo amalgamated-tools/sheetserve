@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pressly/goose/v3"
 
@@ -95,11 +96,15 @@ func TestDashboardChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.SaveOps(ctx, id, "shop", "Orders", []string{"read"}); err != nil {
+	if err := db.SaveOps(ctx, id, "shop", map[string][]string{"Orders": {"read"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SaveOps(ctx, id, "shop", "Nope", nil); err == nil || !strings.Contains(err.Error(), "unknown tab") {
+	// An unknown tab fails the whole save, so Orders keeps read.
+	if err := db.SaveOps(ctx, id, "shop", map[string][]string{"Orders": nil, "Nope": nil}); err == nil || !strings.Contains(err.Error(), "unknown tab") {
 		t.Errorf("save unknown tab: %v", err)
+	}
+	if s, err := db.UserSettings(ctx, id); err != nil || len(s.Spreadsheets["shop"].Tabs["Orders"].Ops) != 1 {
+		t.Errorf("a failed save changed Orders: %v", err)
 	}
 	cols := map[string]Column{"qty": {Type: "integer", Required: true, Default: "1"}, "note": {}, "size": {Type: "enum", Options: []string{"S", "M"}}}
 	if err := db.SaveColumns(ctx, id, "shop", map[string]TabRule{"Orders": {Hidden: []string{"cost"}, Key: "sku", Columns: cols}}); err != nil {
@@ -247,5 +252,46 @@ func TestOpenSignup(t *testing.T) {
 	}
 	if users, err := db.Users(ctx); err != nil || len(users) != 2 || users[1].Role != rbac.Pending {
 		t.Errorf("a suspended user signing in again: %+v %v", users, err)
+	}
+}
+
+// A key records when it was made, and when it was last used, at most once a minute.
+func TestKeyTimes(t *testing.T) {
+	db, err := Open(t.TempDir()+"/keys.db", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	id, err := db.UpsertUser(ctx, "a", "a@example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateKey(ctx, id, Key{Name: "k", Hash: HashKey("k"), Tabs: []string{"*"}}); err != nil {
+		t.Fatal(err)
+	}
+	key := func() Key {
+		t.Helper()
+		s, err := db.UserSettings(ctx, id)
+		if err != nil || len(s.Keys) != 1 {
+			t.Fatalf("keys: %v", err)
+		}
+		return s.Keys[0]
+	}
+	if k := key(); time.Since(k.Created) > time.Minute || !k.LastUsed.IsZero() {
+		t.Errorf("new key: %+v", k)
+	}
+	if err := db.TouchKey(ctx, HashKey("k")); err != nil {
+		t.Fatal(err)
+	}
+	used := key().LastUsed
+	if time.Since(used) > time.Minute {
+		t.Errorf("last used: %v", used)
+	}
+	if _, err := db.Exec(`UPDATE api_keys SET last_used_at = last_used_at - 30`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TouchKey(ctx, HashKey("k")); err != nil || !key().LastUsed.Equal(used.Add(-30*time.Second)) {
+		t.Errorf("a use within a minute wrote again: %v", err)
 	}
 }

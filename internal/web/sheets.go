@@ -165,32 +165,6 @@ func (d *Dashboard) create(ctx context.Context, userID int64, title string, tabs
 	return c.Create(ctx, title, tabs)
 }
 
-// opsPreset is a named set of ops that a tab row's menu turns on at once. Ops lists them in
-// db.AllOps order, joined by commas.
-type opsPreset struct{ Label, Ops string }
-
-var opsPresets = []opsPreset{
-	{"None", ""},
-	{"Read only", "read"},
-	{"Read and write", "read,create,update"},
-	{"All", strings.Join(db.AllOps, ",")},
-}
-
-// presetValue returns the menu value that matches ops, or "custom" when no preset does.
-func presetValue(ops []string) string {
-	var in []string
-	for _, op := range db.AllOps {
-		if slices.Contains(ops, op) {
-			in = append(in, op)
-		}
-	}
-	v := strings.Join(in, ",")
-	if slices.ContainsFunc(opsPresets, func(p opsPreset) bool { return p.Ops == v }) {
-		return v
-	}
-	return "custom"
-}
-
 func (d *Dashboard) deleteSheet(w http.ResponseWriter, r *http.Request, u user) {
 	name := r.FormValue("name")
 	err := d.DB.DeleteSpreadsheet(r.Context(), u.id, name)
@@ -200,17 +174,23 @@ func (d *Dashboard) deleteSheet(w http.ResponseWriter, r *http.Request, u user) 
 	d.change(w, r, u, sheetsPage, err)
 }
 
-// saveTab sets the ops a tab allows. Its columns are set on the columns page.
-func (d *Dashboard) saveTab(w http.ResponseWriter, r *http.Request, u user) {
+// saveOps sets the ops each tab of a spreadsheet allows: the form lists each tab as "tab", and
+// its ops as "ops:<tab>". Columns are set on the columns page.
+func (d *Dashboard) saveOps(w http.ResponseWriter, r *http.Request, u user) {
 	if err := r.ParseForm(); err != nil {
 		d.render(w, r, u, view{path: sheetsPage, err: "could not read the form"}, http.StatusBadRequest)
 		return
 	}
-	sheet, tab, ops := r.FormValue("sheet"), r.FormValue("tab"), r.Form["ops"]
-	err := d.DB.SaveOps(r.Context(), u.id, sheet, tab, ops)
+	sheet, ops := r.FormValue("sheet"), map[string][]string{}
+	for _, tab := range r.Form["tab"] {
+		ops[tab] = r.Form["ops:"+tab]
+	}
+	err := d.DB.SaveOps(r.Context(), u.id, sheet, ops)
 	if err == nil {
-		audit(r.Context(), u, "tab.save", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
-			slog.String(otelkeys.Ops, strings.Join(ops, ",")))
+		for _, tab := range r.Form["tab"] {
+			audit(r.Context(), u, "tab.save", slog.String(otelkeys.Sheet, sheet), slog.String(otelkeys.Tab, tab),
+				slog.String(otelkeys.Ops, strings.Join(ops[tab], ",")))
+		}
 	}
 	d.change(w, r, u, sheetsPage+"#sheet-"+sheet, err)
 }

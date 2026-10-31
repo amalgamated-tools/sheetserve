@@ -14,7 +14,7 @@ The server keeps them in SQLite.
 - Every request is logged as JSON, with its status, duration, request ID and trace ID. API requests also log the key name and the reason for any refusal.
 - Sign-ins and dashboard changes, such as a new key or a tab rule, are logged as `audit` records that name the user.
 
-![The Spreadsheets page: each tab of the shop spreadsheet has its allowed ops, its key column, and a link to set its column types](docs/images/spreadsheets.jpg)
+![The Spreadsheets page: each tab of the demo shop spreadsheet has its allowed ops and its key column, with one Save ops button for the spreadsheet](docs/images/spreadsheets.jpg)
 
 ## Setup
 
@@ -62,7 +62,9 @@ Sign in and add a spreadsheet from your Drive. The Columns page for it opens nex
 Then turn on the ops you want for each tab. New tabs start with no ops enabled.
 Then create an API key on the API keys page. Row 1 of each tab is its header row.
 
-![The API keys page: a new storefront key scoped to shop/Products and shop/Orders with read and create](docs/images/api-keys.jpg)
+The API keys page shows when each key was created and last used, and how many calls to Google it has left this minute.
+
+![The API keys page: a new storefront key scoped to the demo shop's Products and Orders tabs with read and create, never used yet](docs/images/api-keys.jpg)
 
 ## Columns
 

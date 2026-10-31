@@ -13,7 +13,7 @@ templ sheetsView(s shell, sheets []sheetView, pickerKey, appID string) {
 		<div class="page-head with-action">
 			<div>
 				<h1>Spreadsheets</h1>
-				<p>Each spreadsheet is served at <code><span class="origin"></span>/v1/&lt;name&gt;/&lt;tab&gt;</code>. Turn on the ops each tab allows, then <a href="/keys">create a key</a> { "for it." }</p>
+				<p>Turn on the ops each tab allows, then <a href="/keys">create a key</a> { "for it." }</p>
 			</div>
 			<a class="button primary" href="/sheets/new">+ Create spreadsheet</a>
 		</div>
@@ -57,36 +57,34 @@ templ sheetCard(sh sheetView) {
 		if len(sh.Tabs) > 0 {
 			<div class="table-wrap">
 				<table>
-					<tr><th>Tab</th><th>Allowed ops</th><th>Columns</th><th></th></tr>
-					for i, t := range sh.Tabs {
-						@tabRow(sh.Name, fmt.Sprintf("tab-%s-%d", sh.Name, i), t)
+					<tr><th>Tab</th><th>Allowed ops</th><th>Columns</th></tr>
+					for _, t := range sh.Tabs {
+						@tabRow(sh.Name, "ops-"+sh.Name, t)
 					}
 				</table>
 			</div>
+			<form id={ "ops-" + sh.Name } class="ops-form actions" method="post" action="/app/tabs">
+				<input type="hidden" name="sheet" value={ sh.Name }/>
+				for _, t := range sh.Tabs {
+					<input type="hidden" name="tab" value={ t.Name }/>
+				}
+				<button>Save ops</button>
+			</form>
 		} else {
 			<p class="muted">No tabs found.</p>
 		}
 	</section>
 }
 
-// tabRow edits one tab's rule. Its inputs belong to the form in the last cell, named f.
+// tabRow shows one tab's ops, whose checkboxes belong to the spreadsheet's form f, and its columns.
 templ tabRow(sheet, f string, t tabView) {
 	<tr>
 		<td><strong>{ t.Name }</strong></td>
 		<td>
-			<div class="ops">
-				// The menu has no name, so it is never posted; sheets.js has it set the checkboxes.
-				<select class="ops-preset" data-form={ f } aria-label={ "Ops preset for " + t.Name }>
-					for _, p := range opsPresets {
-						<option value={ p.Ops } selected?={ presetValue(t.Ops) == p.Ops }>{ p.Label }</option>
-					}
-					<option value="custom" disabled selected?={ presetValue(t.Ops) == "custom" }>Custom</option>
-				</select>
-				<div class="chips">
-					for _, op := range db.AllOps {
-						<label class="chip"><input type="checkbox" form={ f } name="ops" value={ op } checked?={ slices.Contains(t.Ops, op) }/> { op }</label>
-					}
-				</div>
+			<div class="chips">
+				for _, op := range db.AllOps {
+					<label class="chip"><input type="checkbox" form={ f } name={ "ops:" + t.Name } value={ op } checked?={ slices.Contains(t.Ops, op) }/> { op }</label>
+				}
 			</div>
 		</td>
 		<td class="muted">
@@ -99,13 +97,6 @@ templ tabRow(sheet, f string, t tabView) {
 			if t.Hidden > 0 {
 				· { fmt.Sprint(t.Hidden) } hidden
 			}
-		</td>
-		<td class="right">
-			<form id={ f } class="tab-form" method="post" action="/app/tabs">
-				<input type="hidden" name="sheet" value={ sheet }/>
-				<input type="hidden" name="tab" value={ t.Name }/>
-				<button>Save</button>
-			</form>
 		</td>
 	</tr>
 }

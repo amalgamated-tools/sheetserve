@@ -13,12 +13,25 @@ templ keysView(s shell, keys []keyView, tabSpecs []string) {
 			<section class="card">
 				<div class="table-wrap">
 					<table>
-						<tr><th>Name</th><th>Tabs</th><th>Ops</th><th></th></tr>
+						<tr><th>Name</th><th>Tabs</th><th>Ops</th><th class="nowrap">Last used</th><th class="nowrap" title="Calls to Google left over the next minute">Quota left</th><th></th></tr>
 						for _, k := range keys {
 							<tr>
-								<td><strong>{ k.Name }</strong></td>
+								<td>
+									<strong>{ k.Name }</strong>
+									if k.Created != "" {
+										<div class="hint nowrap">created { k.Created }</div>
+									}
+								</td>
 								<td><code>{ k.Tabs }</code></td>
 								<td>{ k.Ops }</td>
+								<td class="muted nowrap">{ k.LastUsed }</td>
+								<td class="muted nowrap">
+									if k.Quota != "" {
+										{ k.Quota }
+									} else {
+										no limit
+									}
+								</td>
 								<td class="right">
 									<form class="inline" method="post" action="/app/keys/delete" data-confirm={ "Revoke " + k.Name + "? Clients using it will get 401." }>
 										<input type="hidden" name="name" value={ k.Name }/>

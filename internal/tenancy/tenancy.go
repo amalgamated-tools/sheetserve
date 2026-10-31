@@ -37,9 +37,13 @@ type tenant struct {
 // lets their keys work. Put api.Routes behind it.
 func (ts *Tenants) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userID, role, ok, err := ts.DB.KeyUser(r.Context(), db.HashKey(api.Bearer(r)))
+		hash := db.HashKey(api.Bearer(r))
+		userID, role, ok, err := ts.DB.KeyUser(r.Context(), hash)
 		var t *tenant
 		if err == nil && ok && role.Can(rbac.UseAPI) {
+			if err := ts.DB.TouchKey(r.Context(), hash); err != nil {
+				slog.Error("touch key", "user", userID, "err", err)
+			}
 			t, err = ts.tenant(r.Context(), userID)
 		}
 		switch {

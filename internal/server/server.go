@@ -113,7 +113,7 @@ func New(ctx context.Context, opts ...Option) (*Server, error) {
 	s.auth.OnSignIn = s.tenants.Invalidate // pick up the new refresh token
 	s.dash = &web.Dashboard{
 		DB: s.db, Auth: s.auth, Tenants: s.tenants, OpenSignup: s.cfg.OpenSignup,
-		PickerKey: s.cfg.GooglePickerAPIKey, AppID: s.cfg.GoogleProjectNumber,
+		PickerKey: s.cfg.GooglePickerAPIKey, AppID: s.cfg.GoogleProjectNumber, Limiter: s.limiter,
 		OperatorName: s.cfg.OperatorName, OperatorContact: s.cfg.OperatorContact, BaseURL: s.cfg.BaseURL,
 	}
 	s.setupRoutes(ctx)

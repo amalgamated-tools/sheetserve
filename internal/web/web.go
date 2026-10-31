@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 	"github.com/go-chi/chi/v5"
@@ -74,7 +75,11 @@ type tabView struct {
 	Hidden int    // how many of its columns are hidden
 }
 
-type keyView struct{ Name, Tabs, Ops string }
+type keyView struct {
+	Name, Tabs, Ops   string
+	Created, LastUsed string // when, for people: "Oct 30, 2026", "5 min ago", "never"; Created is "" if unknown
+	Quota             string // the Google calls it has left a minute, or "" when unlimited
+}
 
 type userView struct {
 	ID    int64
@@ -93,8 +98,9 @@ type Dashboard struct {
 	DB        *db.DB
 	Auth      *auth.Google
 	Tenants   *tenancy.Tenants
-	PickerKey string // browser API key for Google Picker
-	AppID     string // Cloud project number, so picked files are granted to this app
+	PickerKey string         // browser API key for Google Picker
+	AppID     string         // Cloud project number, so picked files are granted to this app
+	Limiter   *store.Limiter // optional; the API keys page shows each key's quota left from it
 	// OpenSignup is set when new users don't need an admin's approval; the Users page says so.
 	OpenSignup bool
 	// Who runs this server, for its privacy policy and terms. Both are optional.
@@ -116,6 +122,10 @@ func (d *Dashboard) Routes(r chi.Router) {
 
 func (d *Dashboard) routes(mux chi.Router) {
 	mux.Method(http.MethodGet, "/static/*", http.FileServerFS(static))
+	// For browsers and crawlers that ask for /favicon.ico without reading the page's icon link.
+	mux.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/favicon.svg", http.StatusMovedPermanently)
+	})
 	mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := d.Auth.CurrentUser(r); ok {
 			http.Redirect(w, r, sheetsPage, http.StatusSeeOther)
@@ -138,7 +148,7 @@ func (d *Dashboard) routes(mux chi.Router) {
 	mux.Post("/app/sheets", d.signedIn(rbac.EditOwn, d.addSheet))
 	mux.Post("/app/sheets/new", d.signedIn(rbac.EditOwn, d.createSheet))
 	mux.Post("/app/sheets/delete", d.signedIn(rbac.EditOwn, d.deleteSheet))
-	mux.Post("/app/tabs", d.signedIn(rbac.EditOwn, d.saveTab))
+	mux.Post("/app/tabs", d.signedIn(rbac.EditOwn, d.saveOps))
 	mux.Post("/app/sheets/columns", d.signedIn(rbac.EditOwn, d.saveColumns))
 	mux.Post("/app/keys", d.signedIn(rbac.EditOwn, d.createKey))
 	mux.Post("/app/keys/delete", d.signedIn(rbac.EditOwn, d.deleteKey))
@@ -299,12 +309,47 @@ func (d *Dashboard) load(ctx context.Context, userID int64) ([]sheetView, []keyV
 		}
 	}
 	var keys []keyView
+	now := time.Now()
 	for _, k := range settings.Keys {
 		ops := "all the tab allows"
 		if len(k.Ops) > 0 {
 			ops = strings.Join(k.Ops, ", ")
 		}
-		keys = append(keys, keyView{k.Name, strings.Join(k.Tabs, ", "), ops})
+		kv := keyView{Name: k.Name, Tabs: strings.Join(k.Tabs, ", "), Ops: ops, LastUsed: "never"}
+		if !k.Created.IsZero() {
+			kv.Created = k.Created.Format("Jan 2, 2006")
+		}
+		if !k.LastUsed.IsZero() {
+			kv.LastUsed = ago(k.LastUsed, now)
+		}
+		if d.Limiter != nil {
+			kv.Quota = quota(d.Limiter.Room(store.WithCaller(ctx, k.Hash), userID))
+		}
+		keys = append(keys, kv)
 	}
 	return views, keys, tabSpecs, nil
+}
+
+// ago says how long before now t was, roughly.
+func ago(t, now time.Time) string {
+	switch d := now.Sub(t); {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d h ago", int(d.Hours()))
+	default:
+		return t.Format("Jan 2, 2006")
+	}
+}
+
+// quota describes how many reads and writes are left this minute, such as "25/27 reads ·
+// 27/27 writes".
+func quota(rooms []store.Room) string {
+	parts := make([]string, 0, len(rooms))
+	for _, r := range rooms {
+		parts = append(parts, fmt.Sprintf("%d/%d %ss", r.Remaining, r.Limit, r.Kind))
+	}
+	return strings.Join(parts, " · ")
 }
