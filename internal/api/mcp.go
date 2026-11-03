@@ -33,8 +33,8 @@ func (a *API) mcpHandler() http.Handler {
 	})
 }
 
-// TODO: the server is rebuilt per request (stateless mode), reading each tab's header from
-// the cache; with cache_ttl 0 every MCP call re-reads every reachable tab. Cache headers separately if that hurts.
+// mcpServer is rebuilt per request (stateless mode), from each reachable tab's header row, which the
+// cache keeps for at least a minute even with caching off.
 func (a *API) mcpServer(ctx context.Context, key *db.Key) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sheetserve", Version: Version}, nil)
 	a.eachTab(ctx, key, func(name, sheet, tab, rowKey string, ops, cols []string) {
@@ -63,11 +63,7 @@ func (a *API) eachTab(ctx context.Context, key *db.Key, fn func(name, sheet, tab
 				name = base + "_" + strconv.Itoa(i)
 			}
 			used[name] = true
-			columns, err := a.svc.VisibleColumns(ctx, sheet, tab)
-			var rowKey string
-			if err == nil {
-				rowKey, err = a.svc.Key(ctx, sheet, tab)
-			}
+			columns, rowKey, err := a.svc.Columns(ctx, sheet, tab)
 			if err != nil {
 				slog.WarnContext(ctx, "skipping tab", "sheet", sheet, "tab", tab, "err", err)
 				continue
